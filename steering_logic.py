@@ -44,7 +44,7 @@ def rect_corners(rect):
 
 class SteeringParkingEnv:
 
-    def __init__(self, map_name="map_2"):
+    def __init__(self, map_name="map_1"):
         pygame.init()
         self.width = 600
         self.height = 600
@@ -235,8 +235,48 @@ def _apply_keyboard(env, keys, dt, v_cmd, delta_cmd):
     return v_cmd, delta_cmd
 
 
+def draw_menu(screen, font, title_font, map_list, mouse_pos):
+    """Rysuje graficzny interfejs wyboru dla 5 map."""
+    screen.fill((30, 35, 45))
+
+    title_surf = title_font.render("WYBÓR MAPY", True, (255, 255, 255))
+    title_rect = title_surf.get_rect(center=(300, 50))
+    screen.blit(title_surf, title_rect)
+
+    buttons = []
+    w, h = 280, 60
+    x = (600 - w) // 2
+
+    for i, map_name in enumerate(map_list):
+        y = 110 + i * 75
+
+        rect = pygame.Rect(x, y, w, h)
+        buttons.append((rect, map_name))
+
+        is_hover = rect.collidepoint(mouse_pos)
+        color = (70, 130, 180) if is_hover else (50, 60, 75)
+        border_color = (255, 255, 255) if is_hover else (100, 110, 125)
+
+        pygame.draw.rect(screen, color, rect, border_radius=8)
+        pygame.draw.rect(screen, border_color, rect, 2, border_radius=8)
+
+        text_str = f"Mapa {i+1}   [{i+1}]"
+        txt_surf = font.render(text_str, True, (255, 255, 255))
+        txt_rect = txt_surf.get_rect(center=rect.center)
+        screen.blit(txt_surf, txt_rect)
+
+    return buttons
+
+
 if __name__ == "__main__":
-    env = SteeringParkingEnv(map_name="map_2")
+    env = SteeringParkingEnv(map_name="map_1")
+    pygame.font.init()
+    font = pygame.font.SysFont("Arial", 18, bold=True)
+    title_font = pygame.font.SysFont("Arial", 32, bold=True)
+
+    # Lista ograniczona do 5 map
+    map_list = [f"map_{i}" for i in range(1, 6)]
+    state = "MENU"  # "MENU" lub "GAME"
     running = True
     v_cmd = 0.0
     delta_cmd = 0.0
@@ -245,37 +285,54 @@ if __name__ == "__main__":
         dt = env.clock.tick(60) / 1000.0
         dt = min(dt, 0.05)
 
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
+        if state == "MENU":
+            mouse_pos = pygame.mouse.get_pos()
+            buttons = draw_menu(env.screen, font, title_font, map_list, mouse_pos)
+            pygame.display.flip()
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
                     running = False
-                elif event.key == pygame.K_r:
-                    env.reset()
-                    v_cmd = 0.0
-                    delta_cmd = 0.0
-                elif event.key == pygame.K_1:
-                    env.set_map("map_1")
-                    v_cmd = 0.0
-                    delta_cmd = 0.0
-                elif event.key == pygame.K_2:
-                    env.set_map("map_2")
-                    v_cmd = 0.0
-                    delta_cmd = 0.0
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        running = False
+                    elif pygame.K_1 <= event.key <= pygame.K_5:
+                        idx = event.key - pygame.K_1
+                        env.set_map(map_list[idx])
+                        state = "GAME"
+                        v_cmd, delta_cmd = 0.0, 0.0
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    for rect, map_name in buttons:
+                        if rect.collidepoint(event.pos):
+                            env.set_map(map_name)
+                            state = "GAME"
+                            v_cmd, delta_cmd = 0.0, 0.0
+                            break
 
-        keys = pygame.key.get_pressed()
-        v_cmd, delta_cmd = _apply_keyboard(env, keys, dt, v_cmd, delta_cmd)
+        elif state == "GAME":
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE or event.key == pygame.K_m:
+                        state = "MENU"
+                    elif event.key == pygame.K_r:
+                        env.reset()
+                        v_cmd = 0.0
+                        delta_cmd = 0.0
 
-        obs, reward, done, info = env.step([v_cmd, delta_cmd], dt=dt)
-        env.render()
+            keys = pygame.key.get_pressed()
+            v_cmd, delta_cmd = _apply_keyboard(env, keys, dt, v_cmd, delta_cmd)
 
-        if done:
-            print(f"Koniec epizodu! Nagroda: {reward}")
-            pygame.time.wait(700)
-            env.reset()
-            v_cmd = 0.0
-            delta_cmd = 0.0
+            obs, reward, done, info = env.step([v_cmd, delta_cmd], dt=dt)
+            env.render()
+
+            if done:
+                print(f"Koniec epizodu! Nagroda: {reward}")
+                pygame.time.wait(700)
+                env.reset()
+                v_cmd = 0.0
+                delta_cmd = 0.0
 
     env.close()
     sys.exit(0)
