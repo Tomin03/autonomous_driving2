@@ -3,7 +3,8 @@ import sys
 import numpy as np
 import pygame
 from items import Car, ParkingSpot
-from phyics import KinematicBicycleModel
+from physics import KinematicBicycleModel
+from maps import load_map
 
 
 def _project(corners, axis):
@@ -43,7 +44,7 @@ def rect_corners(rect):
 
 class SteeringParkingEnv:
 
-    def __init__(self):
+    def __init__(self, map_name="map_2"):
         pygame.init()
         self.width = 600
         self.height = 600
@@ -62,59 +63,27 @@ class SteeringParkingEnv:
         self.park_hold_required = 2.0
         self.park_speed_eps = 8.0
 
-        # Model fizyki
+        # Model fizyki i mapa
         self.physics = KinematicBicycleModel(wheelbase=self.wheelbase)
-        self.font = pygame.font.SysFont(None, 22)
+        
+        self.map_name = map_name
+        self._init_map()
+        self.reset()
 
+    def set_map(self, map_name):
+        """Zmienia bieżącą mapę i resetuje środowisko."""
+        self.map_name = map_name
         self._init_map()
         self.reset()
 
     def _init_map(self):
-        spot_positions = [
-            (270, 50),
-            (330, 50),
-            (500, 50),
-            (330, 230),
-            (500, 230),
-            (330, 340),
-            (110, 460),
-            (190, 460),
-            (270, 460),
-        ]
-        self.spots = [
-            ParkingSpot(x, y, self.spot_w, self.spot_h)
-            for x, y in spot_positions
-        ]
-        self.target_spot = ParkingSpot(
-            410, 50, self.spot_w, self.spot_h, is_target=True
+        """Ładuje dane mapy z modułu maps.py."""
+        self.spots, self.target_spot, self.obstacles, self.start_pos = load_map(
+            self.map_name, self
         )
 
-        # Wyśrodkowane przeszkody
-        self.obstacles = []
-        for spot in self.spots:
-            rear_axle_x = spot.rect.x + (self.spot_w // 2)
-            rear_axle_y = spot.rect.y + self.spot_h - 20
-
-            self.obstacles.append(
-                Car(
-                    rear_axle_x,
-                    rear_axle_y,
-                    self.car_w,
-                    self.car_h,
-                    color=(70, 70, 70),
-                    is_hollow=False,
-                    wheelbase=self.wheelbase,
-                )
-            )
-            # Auta zaparkowane nosem w górę (theta = -pi/2)
-            self.obstacles[-1].update_position(
-                self.obstacles[-1].x, self.obstacles[-1].y, -math.pi / 2
-            )
-
     def reset(self):
-        self.x = 90.0
-        self.y = 175.0
-        self.theta = 0.0  # 0 = w prawo, aleja przed miejscami parkingowymi
+        self.x, self.y, self.theta = self.start_pos
         self.v = 0.0
         self.phi = 0.0
 
@@ -137,9 +106,7 @@ class SteeringParkingEnv:
         )
 
     def step(self, action, dt=0.1):
-        """
-        action = [v_cmd, delta_cmd]
-        """
+        """action = [v_cmd, delta_cmd]"""
         target_v, target_phi = action
 
         self.v = float(np.clip(target_v, -self.max_v / 2, self.max_v))
@@ -169,20 +136,22 @@ class SteeringParkingEnv:
 
         return self._get_obs(), reward, done, {}
 
-    def _heading_error_to_vertical(self):
-        to_up = abs(math.atan2(
-            math.sin(self.theta + math.pi / 2),
-            math.cos(self.theta + math.pi / 2),
-        ))
-        to_down = abs(math.atan2(
-            math.sin(self.theta - math.pi / 2),
-            math.cos(self.theta - math.pi / 2),
-        ))
-        return min(to_up, to_down)
+    def _heading_error(self):
+        """Oblicza błąd kąta w zależności od orientacji slotu (pionowy vs poziomy)."""
+        is_horizontal = self.target_spot.rect.width > self.target_spot.rect.height
+        
+        if is_horizontal:
+            to_right = abs(math.atan2(math.sin(self.theta), math.cos(self.theta)))
+            to_left = abs(math.atan2(math.sin(self.theta - math.pi), math.cos(self.theta - math.pi)))
+            return min(to_right, to_left)
+        else:
+            to_up = abs(math.atan2(math.sin(self.theta + math.pi / 2), math.cos(self.theta + math.pi / 2)))
+            to_down = abs(math.atan2(math.sin(self.theta - math.pi / 2), math.cos(self.theta - math.pi / 2)))
+            return min(to_up, to_down)
 
     def _is_fully_parked(self):
-        """Cała karoseria mieści się w slocie, auto ustawione pionowo."""
-        if self._heading_error_to_vertical() > math.radians(18):
+        """Cała karoseria mieści się w slocie, auto poprawnie wyrównane."""
+        if self._heading_error() > math.radians(18):
             return False
         r = self.target_spot.rect
         margin = 1.0
@@ -197,6 +166,9 @@ class SteeringParkingEnv:
     def render(self):
         self.screen.fill((240, 240, 240))
 
+        # Bandy mapy (zewnętrzna ramka krawędziowa)
+        pygame.draw.rect(self.screen, (30, 30, 30), (0, 0, self.width, self.height), 8)
+
         for spot in self.spots:
             spot.draw(self.screen)
         self.target_spot.draw(self.screen)
@@ -205,31 +177,11 @@ class SteeringParkingEnv:
             self._draw_rotated_car(obstacle, obstacle.theta)
 
         self._draw_rotated_car(self.car, self.theta, self.phi)
-        self._draw_hud()
 
         pygame.display.flip()
 
-    def _draw_hud(self):
-        lines = [
-            "WASD / strzalki: jazda i skret | R: reset | ESC: wyjscie",
-            "Wjedz calym autem w zielone miejsce i zatrzymaj sie na 2 s",
-            f"v = {self.v:6.1f} px/s    skret = {math.degrees(self.phi):6.1f} deg",
-        ]
-        if self._is_fully_parked():
-            if abs(self.v) <= self.park_speed_eps:
-                lines.append(
-                    f"Postoj: {min(self.park_time, self.park_hold_required):.1f} / {self.park_hold_required:.1f} s"
-                )
-            else:
-                lines.append("Zatrzymaj sie, zeby zaliczyc postoj")
-        elif polygons_overlap(self.car.corners, rect_corners(self.target_spot.rect)):
-            lines.append("Wjedz calym autem do srodka slotu")
-        for i, text in enumerate(lines):
-            surf = self.font.render(text, True, (30, 30, 30))
-            self.screen.blit(surf, (10, 10 + i * 20))
-
     def _draw_rotated_car(self, car, theta, steer_angle=0.0):
-        """Obrót wokół tylnej osi. Sprite wskazuje górę, theta=0 to prawo."""
+        """Obrót wokół tylnej osi."""
         image = pygame.Surface((car.width, car.height), pygame.SRCALPHA)
         car.draw(image, steer_angle=steer_angle)
 
@@ -284,7 +236,7 @@ def _apply_keyboard(env, keys, dt, v_cmd, delta_cmd):
 
 
 if __name__ == "__main__":
-    env = SteeringParkingEnv()
+    env = SteeringParkingEnv(map_name="map_2")
     running = True
     v_cmd = 0.0
     delta_cmd = 0.0
@@ -301,6 +253,14 @@ if __name__ == "__main__":
                     running = False
                 elif event.key == pygame.K_r:
                     env.reset()
+                    v_cmd = 0.0
+                    delta_cmd = 0.0
+                elif event.key == pygame.K_1:
+                    env.set_map("map_1")
+                    v_cmd = 0.0
+                    delta_cmd = 0.0
+                elif event.key == pygame.K_2:
+                    env.set_map("map_2")
                     v_cmd = 0.0
                     delta_cmd = 0.0
 
