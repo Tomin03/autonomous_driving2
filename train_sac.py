@@ -1,0 +1,207 @@
+"""Trening SAC z asymetrycznym krytykiem (bez Sim2Real)."""
+
+import argparse
+import os
+import time
+
+import numpy as np
+import torch
+
+from sac import SACAgent
+from steering_logic import SteeringParkingEnv
+
+
+CONTROL_DT = 0.05
+
+
+def make_env(args, render_mode=None):
+    return SteeringParkingEnv(
+        map_name=args.maps[0],
+        render_mode=render_mode,
+        n_lidar_beams=args.lidar_beams,
+        lidar_max_range=args.lidar_range,
+        randomize_maps=len(args.maps) > 1,
+        spawn_noise=True,
+        time_limit=True,
+        max_episode_steps=args.max_steps,
+        train_maps=args.maps,
+    )
+
+
+def evaluate(env, agent, episodes=25):
+    successes = 0
+    collisions = 0
+    returns = []
+    for _ in range(episodes):
+        obs = env.reset()
+        done = False
+        ep_ret = 0.0
+        while not done:
+            action = agent.act(obs, deterministic=True)
+            v, phi = env.unscale_action(action)
+            obs, reward, done, info = env.step([v, phi], dt=CONTROL_DT)
+            ep_ret += reward
+        returns.append(ep_ret)
+        if info.get("success"):
+            successes += 1
+        if info.get("collision"):
+            collisions += 1
+    return {
+        "success_rate": successes / episodes,
+        "collision_rate": collisions / episodes,
+        "return": float(np.mean(returns)),
+    }
+
+
+def train(args):
+    os.makedirs(args.save_dir, exist_ok=True)
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
+    print(f"Urzadzenie: {device}")
+    print("Algorytm: SAC (krytyk privileged)")
+    print(f"Mapy: {', '.join(args.maps)}")
+    print(f"Kroki treningu: {args.timesteps}")
+    print("Log: R = nagroda epizodu, avg20 = srednia z ostatnich 20 epizodow")
+
+    env = make_env(args, render_mode=None)
+    eval_env = make_env(args, render_mode=None)
+    agent = SACAgent(
+        env.obs_dim,
+        env.act_dim,
+        device,
+        priv_dim=env.priv_dim,
+        hidden=args.hidden,
+    )
+
+    obs = env.reset()
+    priv = env.get_priv_obs(obs)
+    ep_ret = 0.0
+    ep_len = 0
+    ep_idx = 0
+    successes = 0
+    collisions = 0
+    recent = []
+    avg_window = 20
+    best_success = -1.0
+    start = time.time()
+    ep_traj = []
+
+    try:
+        for step in range(1, args.timesteps + 1):
+            if step < args.warmup:
+                action = np.random.uniform(-1.0, 1.0, size=env.act_dim).astype(np.float32)
+                v, phi = env.unscale_action(action)
+            else:
+                action = agent.act(obs, deterministic=False)
+                v, phi = env.unscale_action(action)
+
+            next_obs, reward, done, info = env.step([v, phi], dt=CONTROL_DT)
+            next_priv = env.get_priv_obs(next_obs)
+            terminated = bool(info.get("success") or info.get("collision"))
+            transition = (
+                obs,
+                priv,
+                action,
+                reward,
+                next_obs,
+                next_priv,
+                terminated,
+            )
+            agent.remember(*transition)
+            ep_traj.append(transition)
+
+            obs = next_obs
+            priv = next_priv
+            ep_ret += reward
+            ep_len += 1
+
+            if step >= args.warmup:
+                agent.update()
+
+            if done:
+                ep_idx += 1
+                recent.append(ep_ret)
+                if len(recent) > avg_window:
+                    recent.pop(0)
+                if info.get("success"):
+                    successes += 1
+                    for tr in ep_traj:
+                        agent.remember_success(*tr)
+                    outcome = "ok"
+                elif info.get("collision"):
+                    collisions += 1
+                    outcome = "crash"
+                else:
+                    outcome = "timeout"
+                elapsed = time.time() - start
+                print(
+                    f"ep={ep_idx:5d}  step={step:7d}  "
+                    f"R={ep_ret:8.1f}  avg{avg_window}={np.mean(recent):7.1f}  "
+                    f"len={ep_len:4d}  {outcome:7s}  "
+                    f"ok={successes:4d}  crash={collisions:4d}  "
+                    f"t={elapsed:6.0f}s"
+                )
+                obs = env.reset()
+                priv = env.get_priv_obs(obs)
+                ep_ret = 0.0
+                ep_len = 0
+                ep_traj = []
+
+            if step % args.eval_interval == 0:
+                stats = evaluate(eval_env, agent, episodes=args.eval_episodes)
+                print(
+                    f"[eval] step={step}  success={stats['success_rate']:.2f}  "
+                    f"crash={stats['collision_rate']:.2f}  "
+                    f"R_avg={stats['return']:.1f}  "
+                    f"avg{avg_window}_train={np.mean(recent) if recent else 0.0:.1f}"
+                )
+                ckpt_extra = {
+                    "algo": "sac",
+                    "n_lidar_beams": args.lidar_beams,
+                    "lidar_max_range": args.lidar_range,
+                    "maps": args.maps,
+                    "step": step,
+                }
+                latest = os.path.join(args.save_dir, "sac_parking.pt")
+                agent.save(latest, extra=ckpt_extra)
+                if stats["success_rate"] >= best_success:
+                    best_success = stats["success_rate"]
+                    best = os.path.join(args.save_dir, "sac_parking_best.pt")
+                    agent.save(best, extra=ckpt_extra)
+                    print(f"Zapisano najlepszy model ({best_success:.2f}): {best}")
+
+    except KeyboardInterrupt:
+        print("Przerwano — zapisuje ostatni model.")
+        agent.save(
+            os.path.join(args.save_dir, "sac_parking.pt"),
+            extra={
+                "algo": "sac",
+                "n_lidar_beams": args.lidar_beams,
+                "lidar_max_range": args.lidar_range,
+            },
+        )
+    finally:
+        env.close()
+        eval_env.close()
+
+    print("Koniec treningu.")
+    print("Obejrzyj: python steering_logic.py  (AGENT SAC)")
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Trening SAC do parkowania")
+    p.add_argument("--timesteps", type=int, default=350_000)
+    p.add_argument("--warmup", type=int, default=2_000)
+    p.add_argument("--max-steps", type=int, default=500)
+    p.add_argument("--hidden", type=int, default=256)
+    p.add_argument("--lidar-beams", type=int, default=16)
+    p.add_argument("--lidar-range", type=float, default=280.0)
+    p.add_argument("--eval-interval", type=int, default=10_000)
+    p.add_argument("--eval-episodes", type=int, default=25)
+    p.add_argument("--save-dir", type=str, default="models")
+    p.add_argument("--maps", nargs="+", default=[f"map_{i}" for i in range(1, 6)])
+    p.add_argument("--cpu", action="store_true")
+    return p.parse_args()
+
+
+if __name__ == "__main__":
+    train(parse_args())

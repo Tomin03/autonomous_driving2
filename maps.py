@@ -30,11 +30,10 @@ MAPS = {
         ]
     }, 
     "map_2": {
-        "start_pos": (70.0, 250.0, 0.0), 
+        "start_pos": (70.0, 450.0, -1.5708), 
         "target_spot": {"x": 500, "y": 90, "orientation": "horizontal"},
         "occupied_spots": [
             # Pierwszy pas od lewej
-            {"x": 150, "y": 130, "orientation": "vertical"},
             {"x": 150, "y": 220, "orientation": "vertical"},
             {"x": 150, "y": 310, "orientation": "vertical"},
             {"x": 150, "y": 400, "orientation": "vertical"},
@@ -42,10 +41,8 @@ MAPS = {
 
             # Środkowy górny
             {"x": 270, "y": 20, "orientation": "horizontal"},
-            {"x": 270, "y": 80, "orientation": "vertical"},
             {"x": 270, "y": 170, "orientation": "vertical"},
             {"x": 270, "y": 260, "orientation": "vertical"},
-            {"x": 325, "y": 80, "orientation": "vertical"},
             {"x": 325, "y": 170, "orientation": "vertical"},
             {"x": 325, "y": 260, "orientation": "vertical"},
 
@@ -82,13 +79,7 @@ MAPS = {
             {"x": 390, "y": 210, "orientation": "vertical"},
             {"x": 510, "y": 210, "orientation": "vertical"},
 
-            # Pas 3 (Trzeci - 5 zajętych miejsc)
-            {"x": 270, "y": 320, "orientation": "vertical"},
-            {"x": 330, "y": 320, "orientation": "vertical"},
-            {"x": 390, "y": 320, "orientation": "vertical"},
-            {"x": 450, "y": 320, "orientation": "vertical"},
-            {"x": 510, "y": 320, "orientation": "vertical"},
-
+    
             # Pas 4 (Dolny - 5 zajętych miejsc obok pozycji startowej)
             {"x": 270, "y": 500, "orientation": "vertical"},
             {"x": 330, "y": 500, "orientation": "vertical"},
@@ -98,7 +89,7 @@ MAPS = {
         ]
     },
     "map_4": {
-        "start_pos": (90.0, 470.0, -1.5708),  
+        "start_pos": (90.0, 500.0, 0),  
         "target_spot": {"x": 390, "y": 150, "orientation": "horizontal"},
         "occupied_spots": [
             # Pas 1 (Górny - 5 zajętych miejsc)
@@ -117,9 +108,6 @@ MAPS = {
             {"x": 160, "y": 250, "orientation": "vertical"},
             {"x": 230, "y": 250, "orientation": "vertical"},
 
-            # Pas 4 (Czwarty)
-            {"x": 160, "y": 350, "orientation": "vertical"},
-            {"x": 230, "y": 350, "orientation": "vertical"},
 
             # Pas tych kolo docelowego
             {"x": 390, "y": 210, "orientation": "horizontal"},

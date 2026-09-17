@@ -1,10 +1,12 @@
 import math
+import os
 import sys
 import numpy as np
 import pygame
-from items import Car, ParkingSpot
+from items import Car
 from physics import KinematicBicycleModel
 from maps import load_map
+from lidar import LidarSensor
 
 
 def _project(corners, axis):
@@ -42,15 +44,54 @@ def rect_corners(rect):
     )
 
 
+def _wrap_angle(a):
+    return math.atan2(math.sin(a), math.cos(a))
+
+
+def _point_aabb_dist(px, py, rect):
+    cx = min(max(px, rect.left), rect.right)
+    cy = min(max(py, rect.top), rect.bottom)
+    return math.hypot(px - cx, py - cy)
+
+
 class SteeringParkingEnv:
 
-    def __init__(self, map_name="map_1"):
-        pygame.init()
+    def __init__(
+        self,
+        map_name="map_1",
+        render_mode="human",
+        n_lidar_beams=16,
+        lidar_max_range=280.0,
+        randomize_maps=False,
+        spawn_noise=False,
+        time_limit=False,
+        max_episode_steps=500,
+        train_maps=None,
+    ):
+        self.render_mode = render_mode
+        self.randomize_maps = randomize_maps
+        self.spawn_noise = spawn_noise
+        self.time_limit = time_limit
+        self.max_episode_steps = max_episode_steps
+        self.train_maps = list(train_maps) if train_maps else [f"map_{i}" for i in range(1, 6)]
+        self.rng = np.random.default_rng()
+
         self.width = 600
         self.height = 600
-        self.screen = pygame.display.set_mode((self.width, self.height))
-        pygame.display.set_caption("Parking Environment - Bicycle Kinematic Model")
-        self.clock = pygame.time.Clock()
+
+        if render_mode == "human":
+            pygame.init()
+            pygame.font.init()
+            self.screen = pygame.display.set_mode((self.width, self.height))
+            pygame.display.set_caption("Parking Environment - Bicycle Kinematic Model")
+            self.clock = pygame.time.Clock()
+            self.hud_font = pygame.font.SysFont("Consolas", 14)
+        else:
+            os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+            pygame.init()
+            self.screen = None
+            self.clock = None
+            self.hud_font = None
 
         # Konfiguracja wymiarów (piksele)
         self.spot_w, self.spot_h = 50, 88
@@ -60,12 +101,41 @@ class SteeringParkingEnv:
         # Limity sterowania w przestrzeni pikseli
         self.max_v = 90.0
         self.max_phi = math.radians(40)
-        self.park_hold_required = 2.0
+        self.max_steer_rate = math.radians(90.0)
+        self.steer_jerk_coef = 1.0
+        self.park_hold_required = 0.5
         self.park_speed_eps = 8.0
+        self.align_heading_tol = math.radians(18)
+        self.success_reward = 250.0
+        self.idle_grace = 0.6
+        self.idle_penalty = 0.35
+        self.border_margin = 8.0
+        self.tsdf_d0 = 45.0
+        self.tsdf_near_dist = 80.0
+        self.anchor_dist = 110.0
+        self.use_hybrid_escape = False
+        self.hybrid_escape = False
+        self._escape_active = False
+        self._escape_clear = 0.0
+        self._escape_hold = 0.0
+        self._escape_phase = "follow"
+        self._backup_time = 0.0
 
-        # Model fizyki i mapa
+        self.n_lidar_beams = n_lidar_beams
+        self.lidar_max_range = lidar_max_range
+        self.lidar = LidarSensor(n_beams=n_lidar_beams, max_range=lidar_max_range)
+        self.lidar_ranges = np.full(n_lidar_beams, lidar_max_range, dtype=np.float32)
+        self.lidar_hits = np.zeros((n_lidar_beams, 2), dtype=np.float32)
+        self.show_lidar = True
+
+        # obs: lidar + [local_x, local_y, sin_err, cos_err, v, phi, horizontal]
+        self.obs_dim = n_lidar_beams + 7
+        # priv: obs + [bound_clear, occ_clear, tsdf, in_occupied, coverage, dist]
+        self.priv_dim = self.obs_dim + 6
+        self.act_dim = 2
+
         self.physics = KinematicBicycleModel(wheelbase=self.wheelbase)
-        
+
         self.map_name = map_name
         self._init_map()
         self.reset()
@@ -74,16 +144,23 @@ class SteeringParkingEnv:
         """Zmienia bieżącą mapę i resetuje środowisko."""
         self.map_name = map_name
         self._init_map()
-        self.reset()
+        return self.reset()
 
     def _init_map(self):
         """Ładuje dane mapy z modułu maps.py."""
         self.spots, self.target_spot, self.obstacles, self.start_pos = load_map(
             self.map_name, self
         )
+        self.lidar.set_scene(
+            self.obstacles, (0.0, 0.0, float(self.width), float(self.height))
+        )
 
     def reset(self):
-        self.x, self.y, self.theta = self.start_pos
+        if self.randomize_maps:
+            self.map_name = str(self.rng.choice(self.train_maps))
+            self._init_map()
+
+        self.x, self.y, self.theta = self._spawn_pose()
         self.v = 0.0
         self.phi = 0.0
 
@@ -98,61 +175,444 @@ class SteeringParkingEnv:
         )
         self.car.update_position(self.x, self.y, self.theta)
         self.park_time = 0.0
+        self._idle_time = 0.0
+        self._escape_active = False
+        self._escape_clear = 0.0
+        self._escape_hold = 0.0
+        self._escape_phase = "follow"
+        self._backup_time = 0.0
+        self.hybrid_escape = False
+        self._anchor_given = False
+        self._steps = 0
+        self._prev_dist = self._dist_to_target()
+        self._prev_tsdf = self._tsdf_value()
+        self._prev_coverage = self._park_coverage()
+        self._prev_heading_err = abs(self._signed_heading_error())
         return self._get_obs()
 
-    def _get_obs(self):
+    def _spawn_pose(self):
+        x0, y0, th0 = self.start_pos
+        if not self.spawn_noise:
+            return x0, y0, th0
+
+        dummy = Car(x0, y0, self.car_w, self.car_h, wheelbase=self.wheelbase)
+        for _ in range(24):
+            x = x0 + float(self.rng.uniform(-10.0, 10.0))
+            y = y0 + float(self.rng.uniform(-10.0, 10.0))
+            th = _wrap_angle(th0 + float(self.rng.uniform(-0.15, 0.15)))
+            dummy.update_position(x, y, th)
+            if self._pose_collides(dummy.corners):
+                continue
+            return x, y, th
+        return x0, y0, th0
+
+    def _pose_collides(self, corners):
+        if self._corners_out_of_bounds(corners):
+            return True
+        for obs in self.obstacles:
+            if polygons_overlap(corners, obs.corners):
+                return True
+        return False
+
+    def _corners_out_of_bounds(self, corners):
+        m = self.border_margin
+        for x, y in corners:
+            if x < m or x > self.width - m or y < m or y > self.height - m:
+                return True
+        return False
+
+    def _target_center(self):
+        r = self.target_spot.rect
+        return r.centerx, r.centery
+
+    def _dist_to_target(self):
+        cx, cy = self.car.center()
+        tx, ty = self._target_center()
+        return math.hypot(tx - cx, ty - cy)
+
+    def _clearance_to_bounds(self):
+        best = 1e9
+        for x, y in self.car.corners:
+            best = min(best, x, y, self.width - x, self.height - y)
+        return float(best)
+
+    def _clearance_to_occupied(self):
+        best = 1e9
+        for obs in self.obstacles:
+            if polygons_overlap(self.car.corners, obs.corners):
+                return 0.0
+            r = obs.rect
+            for px, py in self.car.corners:
+                best = min(best, _point_aabb_dist(px, py, r))
+            er = self.car.rect
+            for ox, oy in obs.corners:
+                best = min(best, _point_aabb_dist(ox, oy, er))
+        if best > 1e8:
+            return 1e9
+        return float(best)
+
+    def _tsdf_value(self):
+        """Przybliżenie TSDF z artykułu REAP: 0 przy przeszkodzie, 1 poza buforem d0."""
+        d = min(self._clearance_to_bounds(), self._clearance_to_occupied())
+        d0 = self.tsdf_d0
+        return float(max(0.0, (min(d, d0) / d0) ** 0.5))
+
+    def _privileged_extras(self):
+        bound = self._clearance_to_bounds()
+        occ = self._clearance_to_occupied()
         return np.array(
-            [self.x, self.y, self.theta, self.v, self.phi], dtype=np.float32
+            [
+                bound / self.width,
+                min(occ, self.width) / self.width,
+                self._tsdf_value(),
+                1.0 if self._in_occupied_bay() else 0.0,
+                self._park_coverage(),
+                self._dist_to_target() / self.width,
+            ],
+            dtype=np.float32,
         )
 
+    def get_priv_obs(self, obs=None):
+        """Obserwacja aktora + geometria GT tylko dla krytyka (asymetryczny SAC)."""
+        if obs is None:
+            obs = self._get_obs()
+        return np.concatenate([obs, self._privileged_extras()])
+
+    def _desired_heading(self):
+        """Najbliższa dopuszczalna orientacja względem slotu."""
+        if self.target_spot.rect.width > self.target_spot.rect.height:
+            candidates = (0.0, math.pi)
+        else:
+            candidates = (-math.pi / 2.0, math.pi / 2.0)
+        return min(candidates, key=lambda h: abs(_wrap_angle(self.theta - h)))
+
+    def _signed_heading_error(self):
+        return _wrap_angle(self._desired_heading() - self.theta)
+
+    def _target_in_car_frame(self):
+        cx, cy = self.car.center()
+        tx, ty = self._target_center()
+        dx, dy = tx - cx, ty - cy
+        c, s = math.cos(self.theta), math.sin(self.theta)
+        local_x = dx * c + dy * s
+        local_y = -dx * s + dy * c
+        return local_x, local_y
+
+    def _get_obs(self):
+        origin = self.car.center()
+        self.lidar_ranges, self.lidar_hits = self.lidar.scan(origin, self.theta)
+
+        lidar_n = self.lidar_ranges / self.lidar_max_range
+        local_x, local_y = self._target_in_car_frame()
+        err = self._signed_heading_error()
+        is_horizontal = 1.0 if self.target_spot.rect.width > self.target_spot.rect.height else 0.0
+
+        extra = np.array(
+            [
+                local_x / self.width,
+                local_y / self.height,
+                math.sin(err),
+                math.cos(err),
+                self.v / self.max_v,
+                self.phi / self.max_phi,
+                is_horizontal,
+            ],
+            dtype=np.float32,
+        )
+        return np.concatenate([lidar_n.astype(np.float32), extra])
+
+    def unscale_action(self, action):
+        """Mapuje akcję agenta z [-1, 1] na (v, phi) w jednostkach fizycznych."""
+        a_v = float(np.clip(action[0], -1.0, 1.0))
+        a_phi = float(np.clip(action[1], -1.0, 1.0))
+        if a_v >= 0.0:
+            v = a_v * self.max_v
+        else:
+            v = a_v * (self.max_v / 2.0)
+        phi = a_phi * self.max_phi
+        return v, phi
+
+    def scale_action(self, v, phi):
+        """Odwrotność unscale_action: (v, phi) → [-1, 1]."""
+        v = float(np.clip(v, -self.max_v / 2.0, self.max_v))
+        phi = float(np.clip(phi, -self.max_phi, self.max_phi))
+        a_v = v / self.max_v if v >= 0.0 else v / (self.max_v / 2.0)
+        a_phi = phi / self.max_phi
+        return np.array([a_v, a_phi], dtype=np.float32)
+
+    def _refresh_lidar(self):
+        origin = self.car.center()
+        self.lidar_ranges, self.lidar_hits = self.lidar.scan(origin, self.theta)
+
+    def _lidar_sector_min(self, center_deg, halfwidth_deg):
+        """Najmniejszy zasięg LiDAR w sektorze względem przodu auta."""
+        if self.lidar_ranges.size == 0:
+            return self.lidar_max_range
+        center = math.radians(center_deg)
+        half = math.radians(halfwidth_deg)
+        angs = np.asarray(self.lidar.relative_angles, dtype=np.float64)
+        delta = np.abs((angs - center + math.pi) % (2.0 * math.pi) - math.pi)
+        sel = delta <= half
+        if not np.any(sel):
+            idx = int(np.argmin(delta))
+            return float(self.lidar_ranges[idx])
+        return float(np.min(self.lidar_ranges[sel]))
+
+    def _looks_like_parking(self):
+        """SAC ma parkować — nie wyciągaj auta ze slotu docelowego."""
+        if self._is_fully_parked():
+            return True
+        if polygons_overlap(self.car.corners, rect_corners(self.target_spot.rect)):
+            return True
+        if self._park_coverage() >= 0.5 and self._dist_to_target() < 90.0:
+            return True
+        return False
+
+    def _in_occupied_bay(self):
+        """Karoseria zachodzi na zajęte miejsce parkingowe (z małym marginesem)."""
+        for spot in self.spots:
+            r = spot.rect.inflate(10, 10)
+            if polygons_overlap(self.car.corners, rect_corners(r)):
+                return True
+        return False
+
+    def _near_occupied_spot(self, inflate=22):
+        for spot in self.spots:
+            r = spot.rect.inflate(inflate, inflate)
+            if polygons_overlap(self.car.corners, rect_corners(r)):
+                return True
+        return False
+
+    def _approaching_occupied(self):
+        """Zbyt blisko zajętego slotu z przodu — jeszcze niekoniecznie w środku."""
+        if self._looks_like_parking():
+            return False
+        front = self._lidar_sector_min(0.0, 34.0)
+        if front > 44.0:
+            return False
+        return self._near_occupied_spot(24)
+
+    def _should_backup_first(self):
+        rear = self._lidar_sector_min(180.0, 38.0)
+        if rear < 18.0:
+            return False
+        front = self._lidar_sector_min(0.0, 38.0)
+        return front < 52.0 or self._in_occupied_bay()
+
+    def _escape_space_clear(self):
+        front = self._lidar_sector_min(0.0, 35.0)
+        return (not self._in_occupied_bay()) and front > 62.0
+
+    def _backup_action(self, dt):
+        """Lekkie cofanie na wprost — bez skrętu, żeby odejść od slotu."""
+        rear = self._lidar_sector_min(180.0, 38.0)
+        front = self._lidar_sector_min(0.0, 36.0)
+        if rear < 16.0:
+            self._escape_phase = "follow"
+            self._backup_time = 0.0
+            return self._follow_action()
+
+        self._backup_time += dt
+        v = -24.0
+        phi = 0.0
+        backed_enough = self._backup_time >= 0.28 and front >= 48.0
+        timed_out = self._backup_time >= 0.70
+        if backed_enough or timed_out:
+            self._escape_phase = "follow"
+            self._backup_time = 0.0
+        return v, phi
+
+    def _follow_action(self):
+        """Dopiero po cofnięciu: obrót i jazda wzdłuż prawej ściany."""
+        front = self._lidar_sector_min(0.0, 32.0)
+        right = self._lidar_sector_min(90.0, 28.0)
+        right_fwd = self._lidar_sector_min(50.0, 22.0)
+        rear = self._lidar_sector_min(180.0, 38.0)
+
+        if front < 30.0 and rear > 20.0:
+            self._escape_phase = "backup"
+            self._backup_time = 0.0
+            return -24.0, 0.0
+
+        desired_right = 36.0
+        err = desired_right - right
+        phi = -0.045 * err
+        if right_fwd < right - 8.0:
+            phi -= 0.22 * self.max_phi
+        if front < 70.0:
+            phi -= 0.18 * self.max_phi * (1.0 - front / 70.0)
+            v = 32.0
+        else:
+            v = 42.0
+        return v, float(np.clip(phi, -self.max_phi, self.max_phi))
+
+    def _escape_action(self, dt):
+        if self._escape_phase == "backup":
+            return self._backup_action(dt)
+        return self._follow_action()
+
+    def apply_hybrid_escape(self, v_cmd, phi_cmd, dt=0.05):
+        """W zajętym slocie: najpierw cofnij, potem wall-follow, na końcu SAC."""
+        if not self.use_hybrid_escape:
+            self.hybrid_escape = False
+            return v_cmd, phi_cmd
+
+        self._refresh_lidar()
+        was_active = self._escape_active
+        was_phase = self._escape_phase
+        trapped = self._in_occupied_bay() or self._approaching_occupied()
+
+        if self._looks_like_parking():
+            self._escape_active = False
+            self._escape_clear = 0.0
+            self._escape_hold = 0.0
+            self._backup_time = 0.0
+        elif trapped:
+            if not self._escape_active:
+                self._escape_phase = (
+                    "backup" if self._should_backup_first() else "follow"
+                )
+                self._backup_time = 0.0
+            self._escape_active = True
+            self._escape_clear = 0.0
+            self._escape_hold = 0.0
+        elif self._escape_active:
+            self._escape_hold += dt
+            if self._escape_hold >= 0.45 and self._escape_space_clear():
+                self._escape_clear += dt
+                if self._escape_clear >= 0.30:
+                    self._escape_active = False
+                    self._escape_hold = 0.0
+                    self._escape_clear = 0.0
+                    self._backup_time = 0.0
+            else:
+                self._escape_clear = 0.0
+
+        self.hybrid_escape = self._escape_active
+        if self._escape_active:
+            v_cmd, phi_cmd = self._escape_action(dt)
+
+        if self._escape_active and not was_active:
+            if was_phase == "backup" or self._escape_phase == "backup":
+                print("Hybryda: cofanie (za blisko slotu)")
+            else:
+                print("Hybryda: wall-follow (wyjazd z zajetego slotu)")
+        elif self._escape_active and was_phase == "backup" and self._escape_phase == "follow":
+            print("Hybryda: wall-follow wzdluz scian")
+        elif was_active and not self._escape_active:
+            print("Hybryda: oddaje sterowanie SAC")
+
+        return v_cmd, phi_cmd
+
     def step(self, action, dt=0.1):
-        """action = [v_cmd, delta_cmd]"""
+        """action = [v_cmd, delta_cmd] w jednostkach fizycznych."""
         target_v, target_phi = action
 
         self.v = float(np.clip(target_v, -self.max_v / 2, self.max_v))
-        self.phi = float(np.clip(target_phi, -self.max_phi, self.max_phi))
+        target_phi = float(np.clip(target_phi, -self.max_phi, self.max_phi))
+        dphi_cmd = abs(target_phi - self.phi)
+        max_step = self.max_steer_rate * dt
+        self.phi = float(np.clip(target_phi, self.phi - max_step, self.phi + max_step))
+
+        reward = 0.0
+        reward -= self.steer_jerk_coef * (dphi_cmd / (2.0 * self.max_phi)) ** 2
 
         self.x, self.y, self.theta = self.physics.update(
             self.x, self.y, self.theta, self.v, self.phi, dt
         )
         self.car.update_position(self.x, self.y, self.theta)
+        self._steps += 1
 
-        reward = -1.0
-        done = False
+        dist = self._dist_to_target()
+        heading_err = abs(self._signed_heading_error())
+        proximity = max(0.0, 1.0 - dist / 220.0)
+        coverage = self._park_coverage()
+        in_spot = self._body_in_spot()
+        aligned = in_spot and heading_err <= self.align_heading_tol
 
-        if self._is_fully_parked() and abs(self.v) <= self.park_speed_eps:
-            self.park_time += dt
-            if self.park_time >= self.park_hold_required:
-                return self._get_obs(), 100.0, True, {}
+        reward += (self._prev_dist - dist) * 0.25
+        reward -= 0.04
+        reward -= (heading_err / math.pi) * 0.4 * proximity
+        # Pokrycie i kąt: tylko przyrost, bez premii za „siedzenie” w slocie.
+        reward += (coverage - self._prev_coverage) * 2.0
+        if coverage > 0.0 or dist < 90.0:
+            reward += (self._prev_heading_err - heading_err) * 0.8
+
+        tsdf = self._tsdf_value()
+        # TSDF nie karze wjazdu między zaparkowane auta przy celu.
+        if in_spot or coverage > 0.0:
+            tsdf_coef = 0.0
+        else:
+            tsdf_coef = 1.5 * min(
+                1.0, max(0.0, (dist - self.tsdf_near_dist) / 70.0)
+            )
+        reward += (tsdf - self._prev_tsdf) * tsdf_coef
+        if not self._anchor_given and dist < self.anchor_dist:
+            reward += 4.0
+            self._anchor_given = True
+        self._prev_dist = dist
+        self._prev_tsdf = tsdf
+        self._prev_coverage = coverage
+        self._prev_heading_err = heading_err
+
+        if abs(self.v) <= self.park_speed_eps:
+            self._idle_time += dt
+        else:
+            self._idle_time = 0.0
+        # Bezruch: kara tylko daleko od slotu. Prędkość: kara tylko po wyrównaniu.
+        if not in_spot and dist > 90.0 and self._idle_time > self.idle_grace:
+            reward -= self.idle_penalty * (self._idle_time - self.idle_grace)
+        if aligned:
+            reward -= abs(self.v) / self.max_v * 0.15
+
+        info = {
+            "dist": dist,
+            "success": False,
+            "collision": False,
+            "timeout": False,
+        }
+
+        if in_spot:
+            if aligned:
+                self.park_time += dt
+                if self.park_time >= self.park_hold_required:
+                    info["success"] = True
+                    return self._get_obs(), self.success_reward, True, info
+            else:
+                # Krótki flicker >18° nie zeruje holdu (brak farmy za oscylację).
+                self.park_time = max(0.0, self.park_time - dt)
         else:
             self.park_time = 0.0
 
-        if not (0 <= self.x <= self.width and 0 <= self.y <= self.height):
-            return self._get_obs(), -100.0, True, {}
+        if self._corners_out_of_bounds(self.car.corners):
+            info["collision"] = True
+            return self._get_obs(), -40.0, True, info
 
         for obs in self.obstacles:
             if polygons_overlap(self.car.corners, obs.corners):
-                return self._get_obs(), -100.0, True, {}
+                info["collision"] = True
+                return self._get_obs(), -40.0, True, info
 
-        return self._get_obs(), reward, done, {}
+        if self.time_limit and self._steps >= self.max_episode_steps:
+            info["timeout"] = True
+            return self._get_obs(), reward - 5.0, True, info
+
+        return self._get_obs(), reward, False, info
+
+    def _park_coverage(self):
+        r = self.target_spot.rect
+        n = 0
+        for x, y in self.car.corners:
+            if r.left <= x <= r.right and r.top <= y <= r.bottom:
+                n += 1
+        return n / 4.0
 
     def _heading_error(self):
         """Oblicza błąd kąta w zależności od orientacji slotu (pionowy vs poziomy)."""
-        is_horizontal = self.target_spot.rect.width > self.target_spot.rect.height
-        
-        if is_horizontal:
-            to_right = abs(math.atan2(math.sin(self.theta), math.cos(self.theta)))
-            to_left = abs(math.atan2(math.sin(self.theta - math.pi), math.cos(self.theta - math.pi)))
-            return min(to_right, to_left)
-        else:
-            to_up = abs(math.atan2(math.sin(self.theta + math.pi / 2), math.cos(self.theta + math.pi / 2)))
-            to_down = abs(math.atan2(math.sin(self.theta - math.pi / 2), math.cos(self.theta - math.pi / 2)))
-            return min(to_up, to_down)
+        return abs(self._signed_heading_error())
 
-    def _is_fully_parked(self):
-        """Cała karoseria mieści się w slocie, auto poprawnie wyrównane."""
-        if self._heading_error() > math.radians(18):
-            return False
+    def _body_in_spot(self):
+        """Wszystkie narożniki karoserii są w prostokącie slotu."""
         r = self.target_spot.rect
         margin = 1.0
         for x, y in self.car.corners:
@@ -163,10 +623,19 @@ class SteeringParkingEnv:
                 return False
         return True
 
+    def _is_fully_parked(self):
+        """Całe auto w slocie i kąt ≤ 18° (równe koła)."""
+        return (
+            self._body_in_spot()
+            and self._heading_error() <= self.align_heading_tol
+        )
+
     def render(self):
+        if self.screen is None:
+            return
+
         self.screen.fill((240, 240, 240))
 
-        # Bandy mapy (zewnętrzna ramka krawędziowa)
         pygame.draw.rect(self.screen, (30, 30, 30), (0, 0, self.width, self.height), 8)
 
         for spot in self.spots:
@@ -176,9 +645,44 @@ class SteeringParkingEnv:
         for obstacle in self.obstacles:
             self._draw_rotated_car(obstacle, obstacle.theta)
 
+        if self.show_lidar:
+            self._draw_lidar()
+
         self._draw_rotated_car(self.car, self.theta, self.phi)
+        self._draw_hud()
 
         pygame.display.flip()
+
+    def _draw_lidar(self):
+        origin = self.car.center()
+        ox, oy = int(origin[0]), int(origin[1])
+        for i, dist in enumerate(self.lidar_ranges):
+            hx, hy = self.lidar_hits[i]
+            t = float(np.clip(dist / self.lidar_max_range, 0.0, 1.0))
+            color = (int(220 * (1.0 - t)), int(180 * t), 40)
+            pygame.draw.line(self.screen, color, (ox, oy), (int(hx), int(hy)), 1)
+            pygame.draw.circle(self.screen, color, (int(hx), int(hy)), 2)
+        pygame.draw.circle(self.screen, (255, 140, 0), (ox, oy), 3)
+
+    def _draw_hud(self):
+        if self.hud_font is None:
+            return
+        min_lidar = float(np.min(self.lidar_ranges))
+        if self.hybrid_escape:
+            ctrl = "COFANIE" if self._escape_phase == "backup" else "ESCAPE"
+        else:
+            ctrl = ""
+        lines = [
+            f"v={self.v:6.1f}  phi={math.degrees(self.phi):5.1f}deg",
+            f"lidar_min={min_lidar:5.1f}  dist={self._dist_to_target():5.1f}",
+            f"mapa={self.map_name}  parked={self._is_fully_parked()}"
+            + (f"  {ctrl}" if ctrl else ""),
+        ]
+        y = 10
+        for line in lines:
+            surf = self.hud_font.render(line, True, (20, 20, 20))
+            self.screen.blit(surf, (12, y))
+            y += 16
 
     def _draw_rotated_car(self, car, theta, steer_angle=0.0):
         """Obrót wokół tylnej osi."""
@@ -203,7 +707,8 @@ class SteeringParkingEnv:
         self.screen.blit(rotated_image, draw_rect.topleft)
 
     def close(self):
-        pygame.quit()
+        if self.render_mode == "human":
+            pygame.quit()
 
 
 def _apply_keyboard(env, keys, dt, v_cmd, delta_cmd):
@@ -235,20 +740,38 @@ def _apply_keyboard(env, keys, dt, v_cmd, delta_cmd):
     return v_cmd, delta_cmd
 
 
-def draw_menu(screen, font, title_font, map_list, mouse_pos):
-    """Rysuje graficzny interfejs wyboru dla 5 map."""
+def draw_menu(screen, font, title_font, map_list, mouse_pos, agent_kind):
+    """Rysuje graficzny interfejs wyboru mapy i trybu."""
     screen.fill((30, 35, 45))
 
     title_surf = title_font.render("WYBÓR MAPY", True, (255, 255, 255))
-    title_rect = title_surf.get_rect(center=(300, 50))
+    title_rect = title_surf.get_rect(center=(300, 42))
     screen.blit(title_surf, title_rect)
 
+    mode_labels = {
+        "manual": ("GRAJ RECZNIE", (70, 130, 180)),
+        "sac": ("AGENT SAC", (80, 180, 120)),
+    }
+    mode_label, mode_color = mode_labels.get(agent_kind, mode_labels["manual"])
+    mode_rect = pygame.Rect(160, 72, 280, 40)
+    is_mode_hover = mode_rect.collidepoint(mouse_pos)
+    pygame.draw.rect(screen, mode_color, mode_rect, border_radius=8)
+    pygame.draw.rect(
+        screen,
+        (255, 255, 255) if is_mode_hover else (100, 110, 125),
+        mode_rect,
+        2,
+        border_radius=8,
+    )
+    mode_surf = font.render(f"Tryb: {mode_label}   [A]", True, (255, 255, 255))
+    screen.blit(mode_surf, mode_surf.get_rect(center=mode_rect.center))
+
     buttons = []
-    w, h = 280, 60
+    w, h = 280, 52
     x = (600 - w) // 2
 
     for i, map_name in enumerate(map_list):
-        y = 110 + i * 75
+        y = 128 + i * 64
 
         rect = pygame.Rect(x, y, w, h)
         buttons.append((rect, map_name))
@@ -265,7 +788,50 @@ def draw_menu(screen, font, title_font, map_list, mouse_pos):
         txt_rect = txt_surf.get_rect(center=rect.center)
         screen.blit(txt_surf, txt_rect)
 
-    return buttons
+    hint = font.render("python train_sac.py", True, (170, 175, 185))
+    screen.blit(hint, hint.get_rect(center=(300, 560)))
+
+    return buttons, mode_rect
+
+
+AGENT_CYCLE = ("manual", "sac")
+
+AGENT_MODEL_PATHS = {
+    "sac": [
+        os.path.join("models", "sac_parking_best.pt"),
+        os.path.join("models", "sac_parking.pt"),
+    ],
+}
+
+
+def _load_policy_actor(path, obs_dim, act_dim, device, algo_hint=None):
+    """Wczytuje Actor z checkpointu SAC."""
+    import torch
+    from sac import Actor
+
+    try:
+        ckpt = torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        ckpt = torch.load(path, map_location=device)
+
+    algo = ckpt.get("algo") or algo_hint or "sac"
+    saved_obs = int(ckpt.get("obs_dim", obs_dim))
+    saved_act = int(ckpt.get("act_dim", act_dim))
+
+    actor = Actor(saved_obs, saved_act)
+    actor.load_state_dict(ckpt["actor"])
+    actor.to(device)
+    actor.eval()
+    return actor, ckpt, algo
+
+
+def _agent_action(actor, obs, device):
+    import torch
+
+    with torch.no_grad():
+        x = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+        action = actor.act(x, deterministic=True)
+    return action.squeeze(0).cpu().numpy()
 
 
 if __name__ == "__main__":
@@ -274,20 +840,27 @@ if __name__ == "__main__":
     font = pygame.font.SysFont("Arial", 18, bold=True)
     title_font = pygame.font.SysFont("Arial", 32, bold=True)
 
-    # Lista ograniczona do 5 map
     map_list = [f"map_{i}" for i in range(1, 6)]
-    state = "MENU"  # "MENU" lub "GAME"
+    state = "MENU"
+    agent_kind = "manual"
     running = True
     v_cmd = 0.0
     delta_cmd = 0.0
 
+    actor = None
+    loaded_kind = None
+    device = None
+
     while running:
-        dt = env.clock.tick(60) / 1000.0
+        fps = 20 if (state == "GAME" and agent_kind == "sac" and actor is not None) else 60
+        dt = env.clock.tick(fps) / 1000.0
         dt = min(dt, 0.05)
 
         if state == "MENU":
             mouse_pos = pygame.mouse.get_pos()
-            buttons = draw_menu(env.screen, font, title_font, map_list, mouse_pos)
+            buttons, mode_rect = draw_menu(
+                env.screen, font, title_font, map_list, mouse_pos, agent_kind
+            )
             pygame.display.flip()
 
             for event in pygame.event.get():
@@ -296,18 +869,57 @@ if __name__ == "__main__":
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         running = False
+                    elif event.key == pygame.K_a:
+                        idx = AGENT_CYCLE.index(agent_kind)
+                        agent_kind = AGENT_CYCLE[(idx + 1) % len(AGENT_CYCLE)]
+                        actor = None
+                        loaded_kind = None
                     elif pygame.K_1 <= event.key <= pygame.K_5:
                         idx = event.key - pygame.K_1
                         env.set_map(map_list[idx])
                         state = "GAME"
                         v_cmd, delta_cmd = 0.0, 0.0
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    for rect, map_name in buttons:
-                        if rect.collidepoint(event.pos):
-                            env.set_map(map_name)
-                            state = "GAME"
-                            v_cmd, delta_cmd = 0.0, 0.0
-                            break
+                    if mode_rect.collidepoint(event.pos):
+                        idx = AGENT_CYCLE.index(agent_kind)
+                        agent_kind = AGENT_CYCLE[(idx + 1) % len(AGENT_CYCLE)]
+                        actor = None
+                        loaded_kind = None
+                    else:
+                        for rect, map_name in buttons:
+                            if rect.collidepoint(event.pos):
+                                env.set_map(map_name)
+                                state = "GAME"
+                                v_cmd, delta_cmd = 0.0, 0.0
+                                break
+
+            if state == "GAME" and agent_kind == "sac" and (
+                actor is None or loaded_kind != agent_kind
+            ):
+                try:
+                    import torch
+
+                    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                    paths = AGENT_MODEL_PATHS[agent_kind]
+                    path = next((p for p in paths if os.path.isfile(p)), None)
+                    if path is None:
+                        print(
+                            f"Brak modelu dla {agent_kind}. "
+                            "Brak modelu SAC. Uruchom: python train_sac.py"
+                        )
+                        agent_kind = "manual"
+                        state = "MENU"
+                    else:
+                        actor, _, algo = _load_policy_actor(
+                            path, env.obs_dim, env.act_dim, device, algo_hint=agent_kind
+                        )
+                        loaded_kind = agent_kind
+                        print(f"Wczytano agenta {algo}: {path}")
+                except Exception as exc:
+                    print(f"Nie udalo sie wczytac agenta: {exc}")
+                    print("Zainstaluj zaleznosci: pip install -r requirements.txt")
+                    agent_kind = "manual"
+                    state = "MENU"
 
         elif state == "GAME":
             for event in pygame.event.get():
@@ -320,15 +932,29 @@ if __name__ == "__main__":
                         env.reset()
                         v_cmd = 0.0
                         delta_cmd = 0.0
+                    elif event.key == pygame.K_l:
+                        env.show_lidar = not env.show_lidar
 
-            keys = pygame.key.get_pressed()
-            v_cmd, delta_cmd = _apply_keyboard(env, keys, dt, v_cmd, delta_cmd)
+            if agent_kind == "sac" and actor is not None:
+                obs = env._get_obs()
+                raw = _agent_action(actor, obs, device)
+                v_cmd, delta_cmd = env.unscale_action(raw)
+                step_dt = 0.05
+            else:
+                keys = pygame.key.get_pressed()
+                v_cmd, delta_cmd = _apply_keyboard(env, keys, dt, v_cmd, delta_cmd)
+                step_dt = dt
 
-            obs, reward, done, info = env.step([v_cmd, delta_cmd], dt=dt)
+            obs, reward, done, info = env.step([v_cmd, delta_cmd], dt=step_dt)
             env.render()
 
             if done:
-                print(f"Koniec epizodu! Nagroda: {reward}")
+                if info.get("success"):
+                    print(f"Zaparkowano! Nagroda: {reward:.1f}")
+                elif info.get("collision"):
+                    print(f"Kolizja. Nagroda: {reward:.1f}")
+                else:
+                    print(f"Koniec epizodu! Nagroda: {reward:.1f}")
                 pygame.time.wait(700)
                 env.reset()
                 v_cmd = 0.0
