@@ -31,11 +31,13 @@ def make_env(args, render_mode=None):
 def evaluate(env, agent, episodes=25):
     successes = 0
     collisions = 0
+    timeouts = 0
     returns = []
     for _ in range(episodes):
         obs = env.reset()
         done = False
         ep_ret = 0.0
+        info = {}
         while not done:
             action = agent.act(obs, deterministic=True)
             v, phi = env.unscale_action(action)
@@ -44,11 +46,14 @@ def evaluate(env, agent, episodes=25):
         returns.append(ep_ret)
         if info.get("success"):
             successes += 1
-        if info.get("collision"):
+        elif info.get("collision"):
             collisions += 1
+        else:
+            timeouts += 1
     return {
         "success_rate": successes / episodes,
         "collision_rate": collisions / episodes,
+        "timeout_rate": timeouts / episodes,
         "return": float(np.mean(returns)),
     }
 
@@ -61,6 +66,7 @@ def train(args):
     print(f"Mapy: {', '.join(args.maps)}")
     print(f"Kroki treningu: {args.timesteps}")
     print("Log: R = nagroda epizodu, avg20 = srednia z ostatnich 20 epizodow")
+    print("Eval jest deterministyczny (bez szumu SAC); ok= w treningu liczy tez przypadkowe sukcesy z eksploracji")
 
     env = make_env(args, render_mode=None)
     eval_env = make_env(args, render_mode=None)
@@ -80,8 +86,10 @@ def train(args):
     successes = 0
     collisions = 0
     recent = []
+    recent_ok = []
     avg_window = 20
-    best_success = -1.0
+    ok_window = 50
+    best_key = None
     start = time.time()
     ep_traj = []
 
@@ -132,6 +140,9 @@ def train(args):
                     outcome = "crash"
                 else:
                     outcome = "timeout"
+                recent_ok.append(1.0 if outcome == "ok" else 0.0)
+                if len(recent_ok) > ok_window:
+                    recent_ok.pop(0)
                 elapsed = time.time() - start
                 print(
                     f"ep={ep_idx:5d}  step={step:7d}  "
@@ -148,9 +159,13 @@ def train(args):
 
             if step % args.eval_interval == 0:
                 stats = evaluate(eval_env, agent, episodes=args.eval_episodes)
+                train_ok = float(np.mean(recent_ok)) if recent_ok else 0.0
                 print(
-                    f"[eval] step={step}  success={stats['success_rate']:.2f}  "
-                    f"crash={stats['collision_rate']:.2f}  "
+                    f"[eval] step={step}  "
+                    f"det_ok={stats['success_rate']:.2f}  "
+                    f"det_crash={stats['collision_rate']:.2f}  "
+                    f"det_timeout={stats['timeout_rate']:.2f}  "
+                    f"train_ok{ok_window}={train_ok:.2f}  "
                     f"R_avg={stats['return']:.1f}  "
                     f"avg{avg_window}_train={np.mean(recent) if recent else 0.0:.1f}"
                 )
@@ -163,11 +178,15 @@ def train(args):
                 }
                 latest = os.path.join(args.save_dir, "sac_parking.pt")
                 agent.save(latest, extra=ckpt_extra)
-                if stats["success_rate"] >= best_success:
-                    best_success = stats["success_rate"]
+                key = (stats["success_rate"], stats["return"])
+                if best_key is None or key > best_key:
+                    best_key = key
                     best = os.path.join(args.save_dir, "sac_parking_best.pt")
                     agent.save(best, extra=ckpt_extra)
-                    print(f"Zapisano najlepszy model ({best_success:.2f}): {best}")
+                    print(
+                        f"Zapisano najlepszy model "
+                        f"(det_ok={stats['success_rate']:.2f}, R_avg={stats['return']:.1f}): {best}"
+                    )
 
     except KeyboardInterrupt:
         print("Przerwano — zapisuje ostatni model.")
