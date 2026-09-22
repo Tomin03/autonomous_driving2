@@ -2,11 +2,16 @@ import math
 import os
 import sys
 import numpy as np
-import pygame
 from items import Car
 from physics import KinematicBicycleModel
-from maps import load_map
+from maps import get_map, list_map_names, load_map, map_dims
 from lidar import LidarSensor
+
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+try:
+    import pygame
+except ImportError:
+    pygame = None
 
 
 def _project(corners, axis):
@@ -67,36 +72,49 @@ class SteeringParkingEnv:
         time_limit=False,
         max_episode_steps=500,
         train_maps=None,
+        create_window=True,
     ):
         self.render_mode = render_mode
         self.randomize_maps = randomize_maps
         self.spawn_noise = spawn_noise
         self.time_limit = time_limit
         self.max_episode_steps = max_episode_steps
-        self.train_maps = list(train_maps) if train_maps else [f"map_{i}" for i in range(1, 6)]
+        self.train_maps = list(train_maps) if train_maps else list_map_names()
+        if not self.train_maps:
+            self.train_maps = ["map_1"]
         self.rng = np.random.default_rng()
+        self._owns_window = False
 
         self.width = 600
         self.height = 600
 
-        if render_mode == "human":
+        if render_mode == "human" and pygame is not None:
             pygame.init()
             pygame.font.init()
-            self.screen = pygame.display.set_mode((self.width, self.height))
-            pygame.display.set_caption("Parking Environment - Bicycle Kinematic Model")
+            self.screen = pygame.Surface((self.width, self.height))
+            if create_window:
+                self._window = pygame.display.set_mode((self.width, self.height))
+                pygame.display.set_caption("Parking Environment - Bicycle Kinematic Model")
+                self._owns_window = True
+            else:
+                self._window = None
             self.clock = pygame.time.Clock()
             self.hud_font = pygame.font.SysFont("Consolas", 14)
         else:
-            os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-            pygame.init()
             self.screen = None
             self.clock = None
             self.hud_font = None
+            self._window = None
 
-        # Konfiguracja wymiarów (piksele)
+        # Konfiguracja wymiarów (piksele) — nadpisywana parametrami mapy
         self.spot_w, self.spot_h = 50, 88
+        self.obstacle_w, self.obstacle_h = 50, 88
         self.car_w, self.car_h = 25, 60
+        self.obstacle_car_w, self.obstacle_car_h = 25, 60
         self.wheelbase = 40.0
+        self.rear = 10.0
+        self.obstacle_wheelbase = 40.0
+        self.obstacle_rear = 10.0
 
         # Limity sterowania w przestrzeni pikseli
         self.max_v = 90.0
@@ -136,6 +154,9 @@ class SteeringParkingEnv:
 
         self.physics = KinematicBicycleModel(wheelbase=self.wheelbase)
 
+        names = list_map_names()
+        if map_name not in names:
+            map_name = names[0] if names else "map_1"
         self.map_name = map_name
         self._init_map()
         self.reset()
@@ -146,10 +167,29 @@ class SteeringParkingEnv:
         self._init_map()
         return self.reset()
 
+    def _apply_map_params(self, data):
+        dims = map_dims(data)
+        self.max_v = float(dims["max_v"])
+        self.car_w = dims["car_w"]
+        self.car_h = dims["car_h"]
+        self.spot_w = dims["spot_w"]
+        self.spot_h = dims["spot_h"]
+        self.obstacle_w = dims["obstacle_w"]
+        self.obstacle_h = dims["obstacle_h"]
+        self.obstacle_car_w = dims["obstacle_car_w"]
+        self.obstacle_car_h = dims["obstacle_car_h"]
+        self.wheelbase = float(dims["wheelbase"])
+        self.rear = float(dims["rear"])
+        self.obstacle_wheelbase = float(dims["obstacle_wheelbase"])
+        self.obstacle_rear = float(dims["obstacle_rear"])
+        self.physics = KinematicBicycleModel(wheelbase=self.wheelbase)
+
     def _init_map(self):
         """Ładuje dane mapy z modułu maps.py."""
+        data = get_map(self.map_name)
+        self._apply_map_params(data)
         self.spots, self.target_spot, self.obstacles, self.start_pos = load_map(
-            self.map_name, self
+            self.map_name, self, data=data
         )
         self.lidar.set_scene(
             self.obstacles, (0.0, 0.0, float(self.width), float(self.height))
@@ -172,6 +212,7 @@ class SteeringParkingEnv:
             color=(0, 102, 204),
             is_hollow=True,
             wheelbase=self.wheelbase,
+            rear_axle_offset_y=self.rear,
         )
         self.car.update_position(self.x, self.y, self.theta)
         self.park_time = 0.0
@@ -195,7 +236,10 @@ class SteeringParkingEnv:
         if not self.spawn_noise:
             return x0, y0, th0
 
-        dummy = Car(x0, y0, self.car_w, self.car_h, wheelbase=self.wheelbase)
+        dummy = Car(
+            x0, y0, self.car_w, self.car_h,
+            wheelbase=self.wheelbase, rear_axle_offset_y=self.rear,
+        )
         for _ in range(24):
             x = x0 + float(self.rng.uniform(-10.0, 10.0))
             y = y0 + float(self.rng.uniform(-10.0, 10.0))
@@ -630,7 +674,80 @@ class SteeringParkingEnv:
             and self._heading_error() <= self.align_heading_tol
         )
 
-    def render(self):
+    def get_render_state(self, reward=0.0, done=False, info=None):
+        """Stan planszy do narysowania w przeglądarce (bez pygame)."""
+        origin = self.car.center()
+        info = info or {}
+
+        def spot_payload(spot):
+            r = spot.rect
+            return {
+                "x": int(r.x),
+                "y": int(r.y),
+                "w": int(r.width),
+                "h": int(r.height),
+                "is_target": bool(spot.is_target),
+            }
+
+        def car_payload(car, phi=0.0, hollow=None):
+            return {
+                "corners": [[float(x), float(y)] for x, y in car.corners],
+                "x": float(car.x),
+                "y": float(car.y),
+                "theta": float(car.theta),
+                "width": float(car.width),
+                "height": float(car.height),
+                "hollow": bool(car.is_hollow if hollow is None else hollow),
+                "phi": float(phi),
+                "color": [int(c) for c in car.color],
+                "wheelbase": float(car.wheelbase),
+                "rear_axle_offset_y": float(car.rear_axle_offset_y),
+                "wheel_w": int(car.wheel_w),
+                "wheel_h": int(car.wheel_h),
+            }
+
+        if self.hybrid_escape:
+            ctrl = "COFANIE" if self._escape_phase == "backup" else "ESCAPE"
+        else:
+            ctrl = ""
+
+        return {
+            "width": self.width,
+            "height": self.height,
+            "map_name": self.map_name,
+            "spots": [spot_payload(s) for s in self.spots],
+            "target": spot_payload(self.target_spot),
+            "obstacles": [car_payload(obs) for obs in self.obstacles],
+            "car": {
+                **car_payload(self.car, phi=self.phi, hollow=True),
+                "center": [float(origin[0]), float(origin[1])],
+            },
+            "lidar": {
+                "show": bool(self.show_lidar),
+                "origin": [float(origin[0]), float(origin[1])],
+                "hits": self.lidar_hits.astype(float).tolist(),
+                "ranges": self.lidar_ranges.astype(float).tolist(),
+                "max_range": float(self.lidar_max_range),
+            },
+            "hud": {
+                "v": float(self.v),
+                "phi_deg": float(math.degrees(self.phi)),
+                "lidar_min": float(np.min(self.lidar_ranges)),
+                "dist": float(self._dist_to_target()),
+                "parked": bool(self._is_fully_parked()),
+                "control": ctrl,
+            },
+            "reward": float(reward),
+            "done": bool(done),
+            "info": {
+                "dist": float(info.get("dist", 0.0)),
+                "success": bool(info.get("success", False)),
+                "collision": bool(info.get("collision", False)),
+                "timeout": bool(info.get("timeout", False)),
+            },
+        }
+
+    def render(self, dest=None, pos=(0, 0), flip=True):
         if self.screen is None:
             return
 
@@ -651,7 +768,11 @@ class SteeringParkingEnv:
         self._draw_rotated_car(self.car, self.theta, self.phi)
         self._draw_hud()
 
-        pygame.display.flip()
+        target = dest if dest is not None else self._window
+        if target is not None:
+            target.blit(self.screen, pos)
+        if flip and target is not None:
+            pygame.display.flip()
 
     def _draw_lidar(self):
         origin = self.car.center()
@@ -707,11 +828,13 @@ class SteeringParkingEnv:
         self.screen.blit(rotated_image, draw_rect.topleft)
 
     def close(self):
-        if self.render_mode == "human":
+        if self._owns_window and pygame is not None:
             pygame.quit()
 
 
 def _apply_keyboard(env, keys, dt, v_cmd, delta_cmd):
+    if pygame is None:
+        return v_cmd, delta_cmd
     v_rate = 180.0
     delta_rate = math.radians(120.0)
 
@@ -742,6 +865,8 @@ def _apply_keyboard(env, keys, dt, v_cmd, delta_cmd):
 
 def draw_menu(screen, font, title_font, map_list, mouse_pos, agent_kind):
     """Rysuje graficzny interfejs wyboru mapy i trybu."""
+    if pygame is None:
+        return [], None
     screen.fill((30, 35, 45))
 
     title_surf = title_font.render("WYBÓR MAPY", True, (255, 255, 255))
@@ -835,130 +960,6 @@ def _agent_action(actor, obs, device):
 
 
 if __name__ == "__main__":
-    env = SteeringParkingEnv(map_name="map_1")
-    pygame.font.init()
-    font = pygame.font.SysFont("Arial", 18, bold=True)
-    title_font = pygame.font.SysFont("Arial", 32, bold=True)
+    from app import run_app
 
-    map_list = [f"map_{i}" for i in range(1, 6)]
-    state = "MENU"
-    agent_kind = "manual"
-    running = True
-    v_cmd = 0.0
-    delta_cmd = 0.0
-
-    actor = None
-    loaded_kind = None
-    device = None
-
-    while running:
-        fps = 20 if (state == "GAME" and agent_kind == "sac" and actor is not None) else 60
-        dt = env.clock.tick(fps) / 1000.0
-        dt = min(dt, 0.05)
-
-        if state == "MENU":
-            mouse_pos = pygame.mouse.get_pos()
-            buttons, mode_rect = draw_menu(
-                env.screen, font, title_font, map_list, mouse_pos, agent_kind
-            )
-            pygame.display.flip()
-
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        running = False
-                    elif event.key == pygame.K_a:
-                        idx = AGENT_CYCLE.index(agent_kind)
-                        agent_kind = AGENT_CYCLE[(idx + 1) % len(AGENT_CYCLE)]
-                        actor = None
-                        loaded_kind = None
-                    elif pygame.K_1 <= event.key <= pygame.K_5:
-                        idx = event.key - pygame.K_1
-                        env.set_map(map_list[idx])
-                        state = "GAME"
-                        v_cmd, delta_cmd = 0.0, 0.0
-                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    if mode_rect.collidepoint(event.pos):
-                        idx = AGENT_CYCLE.index(agent_kind)
-                        agent_kind = AGENT_CYCLE[(idx + 1) % len(AGENT_CYCLE)]
-                        actor = None
-                        loaded_kind = None
-                    else:
-                        for rect, map_name in buttons:
-                            if rect.collidepoint(event.pos):
-                                env.set_map(map_name)
-                                state = "GAME"
-                                v_cmd, delta_cmd = 0.0, 0.0
-                                break
-
-            if state == "GAME" and agent_kind == "sac" and (
-                actor is None or loaded_kind != agent_kind
-            ):
-                try:
-                    import torch
-
-                    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                    paths = AGENT_MODEL_PATHS[agent_kind]
-                    path = next((p for p in paths if os.path.isfile(p)), None)
-                    if path is None:
-                        print(
-                            f"Brak modelu dla {agent_kind}. "
-                            "Brak modelu SAC. Uruchom: python train_sac.py"
-                        )
-                        agent_kind = "manual"
-                        state = "MENU"
-                    else:
-                        actor, _, algo = _load_policy_actor(
-                            path, env.obs_dim, env.act_dim, device, algo_hint=agent_kind
-                        )
-                        loaded_kind = agent_kind
-                        print(f"Wczytano agenta {algo}: {path}")
-                except Exception as exc:
-                    print(f"Nie udalo sie wczytac agenta: {exc}")
-                    print("Zainstaluj zaleznosci: pip install -r requirements.txt")
-                    agent_kind = "manual"
-                    state = "MENU"
-
-        elif state == "GAME":
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE or event.key == pygame.K_m:
-                        state = "MENU"
-                    elif event.key == pygame.K_r:
-                        env.reset()
-                        v_cmd = 0.0
-                        delta_cmd = 0.0
-                    elif event.key == pygame.K_l:
-                        env.show_lidar = not env.show_lidar
-
-            if agent_kind == "sac" and actor is not None:
-                obs = env._get_obs()
-                raw = _agent_action(actor, obs, device)
-                v_cmd, delta_cmd = env.unscale_action(raw)
-                step_dt = 0.05
-            else:
-                keys = pygame.key.get_pressed()
-                v_cmd, delta_cmd = _apply_keyboard(env, keys, dt, v_cmd, delta_cmd)
-                step_dt = dt
-
-            obs, reward, done, info = env.step([v_cmd, delta_cmd], dt=step_dt)
-            env.render()
-
-            if done:
-                if info.get("success"):
-                    print(f"Zaparkowano! Nagroda: {reward:.1f}")
-                elif info.get("collision"):
-                    print(f"Kolizja. Nagroda: {reward:.1f}")
-                else:
-                    print(f"Koniec epizodu! Nagroda: {reward:.1f}")
-                pygame.time.wait(700)
-                env.reset()
-                v_cmd = 0.0
-                delta_cmd = 0.0
-
-    env.close()
-    sys.exit(0)
+    run_app()

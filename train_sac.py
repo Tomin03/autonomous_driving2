@@ -7,6 +7,7 @@ import time
 import numpy as np
 import torch
 
+from maps import list_map_names
 from sac import SACAgent
 from steering_logic import SteeringParkingEnv
 
@@ -58,7 +59,7 @@ def evaluate(env, agent, episodes=25):
     }
 
 
-def train(args):
+def train(args, progress_cb=None, stop_event=None):
     os.makedirs(args.save_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     print(f"Urzadzenie: {device}")
@@ -85,6 +86,9 @@ def train(args):
     ep_idx = 0
     successes = 0
     collisions = 0
+    timeouts = 0
+    streak = 0
+    best_streak = 0
     recent = []
     recent_ok = []
     avg_window = 20
@@ -92,9 +96,39 @@ def train(args):
     best_key = None
     start = time.time()
     ep_traj = []
+    stopped = False
+    last_step = 0
+
+    def emit(extra=None):
+        if progress_cb is None:
+            return
+        payload = {
+            "step": last_step,
+            "timesteps": args.timesteps,
+            "episode": ep_idx,
+            "reward": extra.get("ep_reward", 0.0) if extra else 0.0,
+            "avg20": float(np.mean(recent)) if recent else 0.0,
+            "successes": successes,
+            "collisions": collisions,
+            "timeouts": timeouts,
+            "streak": streak,
+            "best_streak": best_streak,
+            "elapsed": time.time() - start,
+            "done": False,
+            "stopped": False,
+        }
+        if extra:
+            payload.update(extra)
+        progress_cb(payload)
 
     try:
         for step in range(1, args.timesteps + 1):
+            last_step = step
+            if stop_event is not None and stop_event.is_set():
+                stopped = True
+                print("Przerwano z interfejsu — zapisuje ostatni model.")
+                break
+
             if step < args.warmup:
                 action = np.random.uniform(-1.0, 1.0, size=env.act_dim).astype(np.float32)
                 v, phi = env.unscale_action(action)
@@ -132,13 +166,18 @@ def train(args):
                     recent.pop(0)
                 if info.get("success"):
                     successes += 1
+                    streak += 1
+                    best_streak = max(best_streak, streak)
                     for tr in ep_traj:
                         agent.remember_success(*tr)
                     outcome = "ok"
                 elif info.get("collision"):
                     collisions += 1
+                    streak = 0
                     outcome = "crash"
                 else:
+                    timeouts += 1
+                    streak = 0
                     outcome = "timeout"
                 recent_ok.append(1.0 if outcome == "ok" else 0.0)
                 if len(recent_ok) > ok_window:
@@ -148,9 +187,10 @@ def train(args):
                     f"ep={ep_idx:5d}  step={step:7d}  "
                     f"R={ep_ret:8.1f}  avg{avg_window}={np.mean(recent):7.1f}  "
                     f"len={ep_len:4d}  {outcome:7s}  "
-                    f"ok={successes:4d}  crash={collisions:4d}  "
+                    f"ok={successes:4d}  crash={collisions:4d}  timeout={timeouts:4d}  "
                     f"t={elapsed:6.0f}s"
                 )
+                emit({"outcome": outcome, "ep_reward": ep_ret, "ep_len": ep_len})
                 obs = env.reset()
                 priv = env.get_priv_obs(obs)
                 ep_ret = 0.0
@@ -187,8 +227,10 @@ def train(args):
                         f"Zapisano najlepszy model "
                         f"(det_ok={stats['success_rate']:.2f}, R_avg={stats['return']:.1f}): {best}"
                     )
+                emit({"eval": stats, "saved_best": best_key == key})
 
     except KeyboardInterrupt:
+        stopped = True
         print("Przerwano — zapisuje ostatni model.")
         agent.save(
             os.path.join(args.save_dir, "sac_parking.pt"),
@@ -199,11 +241,42 @@ def train(args):
             },
         )
     finally:
+        try:
+            agent.save(
+                os.path.join(args.save_dir, "sac_parking.pt"),
+                extra={
+                    "algo": "sac",
+                    "n_lidar_beams": args.lidar_beams,
+                    "lidar_max_range": args.lidar_range,
+                    "maps": args.maps,
+                    "step": last_step,
+                },
+            )
+        except Exception:
+            pass
         env.close()
         eval_env.close()
 
     print("Koniec treningu.")
-    print("Obejrzyj: python steering_logic.py  (AGENT SAC)")
+    print("Obejrzyj: python app.py  (http://127.0.0.1:8000, AGENT SAC)")
+    if progress_cb is not None:
+        progress_cb(
+            {
+                "step": last_step,
+                "timesteps": args.timesteps,
+                "episode": ep_idx,
+                "reward": 0.0,
+                "avg20": float(np.mean(recent)) if recent else 0.0,
+                "successes": successes,
+                "collisions": collisions,
+                "timeouts": timeouts,
+                "streak": streak,
+                "best_streak": best_streak,
+                "elapsed": time.time() - start,
+                "done": True,
+                "stopped": stopped,
+            }
+        )
 
 
 def parse_args():
@@ -217,9 +290,13 @@ def parse_args():
     p.add_argument("--eval-interval", type=int, default=10_000)
     p.add_argument("--eval-episodes", type=int, default=25)
     p.add_argument("--save-dir", type=str, default="models")
-    p.add_argument("--maps", nargs="+", default=[f"map_{i}" for i in range(1, 6)])
+    p.add_argument("--maps", nargs="+", default=None)
     p.add_argument("--cpu", action="store_true")
-    return p.parse_args()
+    args = p.parse_args()
+    if not args.maps:
+        names = list_map_names()
+        args.maps = names if names else [f"map_{i}" for i in range(1, 6)]
+    return args
 
 
 if __name__ == "__main__":

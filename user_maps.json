@@ -1,0 +1,131 @@
+{
+  "map_2": {
+    "start_pos": [
+      80.0,
+      190.0,
+      0.0
+    ],
+    "target_spot": {
+      "x": 440,
+      "y": 320,
+      "orientation": "horizontal"
+    },
+    "occupied_spots": [
+      {
+        "x": 480,
+        "y": 30,
+        "orientation": "vertical"
+      },
+      {
+        "x": 420,
+        "y": 30,
+        "orientation": "vertical"
+      },
+      {
+        "x": 360,
+        "y": 30,
+        "orientation": "vertical"
+      },
+      {
+        "x": 270,
+        "y": 30,
+        "orientation": "vertical"
+      },
+      {
+        "x": 210,
+        "y": 30,
+        "orientation": "vertical"
+      },
+      {
+        "x": 150,
+        "y": 30,
+        "orientation": "vertical"
+      },
+      {
+        "x": 90,
+        "y": 30,
+        "orientation": "vertical"
+      }
+    ],
+    "max_v": 70.0,
+    "car_size": 1.25,
+    "spot_size": 1.0,
+    "obstacle_size": 0.95
+  },
+  "map_3": {
+    "start_pos": [
+      180.0,
+      490.0,
+      -1.570796326794897
+    ],
+    "target_spot": {
+      "x": 440,
+      "y": 50,
+      "orientation": "vertical"
+    },
+    "occupied_spots": [
+      {
+        "x": 370,
+        "y": 50,
+        "orientation": "vertical"
+      },
+      {
+        "x": 300,
+        "y": 50,
+        "orientation": "vertical"
+      },
+      {
+        "x": 530,
+        "y": 50,
+        "orientation": "vertical"
+      },
+      {
+        "x": 370,
+        "y": 150,
+        "orientation": "vertical"
+      }
+    ],
+    "max_v": 60.0,
+    "car_size": 1.0,
+    "spot_size": 1.0,
+    "obstacle_size": 1.0
+  },
+  "map_4": {
+    "start_pos": [
+      90.0,
+      300.0,
+      0.0
+    ],
+    "target_spot": {
+      "x": 410,
+      "y": 50,
+      "orientation": "vertical"
+    },
+    "occupied_spots": [
+      {
+        "x": 480,
+        "y": 50,
+        "orientation": "vertical"
+      },
+      {
+        "x": 340,
+        "y": 50,
+        "orientation": "vertical"
+      },
+      {
+        "x": 270,
+        "y": 50,
+        "orientation": "vertical"
+      },
+      {
+        "x": 200,
+        "y": 50,
+        "orientation": "vertical"
+      }
+    ],
+    "max_v": 90.0,
+    "car_size": 1.0,
+    "spot_size": 1.0,
+    "obstacle_size": 1.0
+  }
+}

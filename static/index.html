@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Autonomiczne Parkowanie</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body data-view="MAIN">
+  <div class="ambient" aria-hidden="true">
+    <div class="glow glow-a"></div>
+    <div class="glow glow-b"></div>
+  </div>
+
+  <main class="shell">
+    <section id="view-main" class="view">
+      <div class="hero">
+        <h1>Autonomiczne Parkowanie</h1>
+        <div class="hero-actions">
+          <button class="btn ok wide" id="btn-train">Trenuj model</button>
+          <button class="btn wide" id="btn-maps">Spis map</button>
+        </div>
+        <p class="status warn" id="main-status"></p>
+      </div>
+    </section>
+
+    <section id="view-maps" class="view hidden" hidden>
+      <header class="page-head">
+        <div>
+          <span class="eyebrow">Biblioteka</span>
+          <h1>Spis map</h1>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn" id="maps-back">Wstecz</button>
+          <button class="btn ok" id="maps-save">Zapisz</button>
+        </div>
+      </header>
+      <div class="map-list" id="map-list"></div>
+      <p class="status warn" id="maps-status"></p>
+      <button class="btn ok list-new" id="maps-new">+ Nowa mapa</button>
+    </section>
+
+    <section id="view-editor" class="view hidden" hidden>
+      <header class="page-head">
+        <div>
+          <span class="eyebrow">Warsztat</span>
+          <h1 id="editor-title">Edytor</h1>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn" id="editor-cancel">Anuluj</button>
+          <button class="btn ok" id="editor-save">Zapisz</button>
+        </div>
+      </header>
+      <div class="editor-layout">
+        <div class="canvas-frame">
+          <canvas id="editor-canvas" width="600" height="600"></canvas>
+        </div>
+        <aside class="editor-side">
+          <div class="panel">
+            <h2>Narzędzie</h2>
+            <div class="editor-tools">
+              <button class="btn tool accent" data-tool="start" id="tool-start">Start auta</button>
+              <button class="btn tool ok" data-tool="target" id="tool-target">Miejsce docelowe</button>
+              <button class="btn tool occupied" data-tool="occupied" id="tool-occupied">Zajęte + auto</button>
+              <button class="btn" id="editor-rotate">Obróć <kbd>R</kbd></button>
+              <button class="btn danger" id="editor-delete">Usuń <kbd>Del</kbd></button>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Parametry mapy</h2>
+            <div class="editor-params">
+              <label class="param">
+                <span class="param-head"><span>v_max auta</span><span id="val-vmax">90</span></span>
+                <input type="range" id="param-vmax" min="40" max="140" step="5" value="90" />
+              </label>
+              <label class="param">
+                <span class="param-head"><span>Rozmiar auta</span><span id="val-car">100%</span></span>
+                <input type="range" id="param-car" min="70" max="140" step="5" value="100" />
+              </label>
+              <label class="param">
+                <span class="param-head"><span>Miejsce parkingowe</span><span id="val-spot">100%</span></span>
+                <input type="range" id="param-spot" min="70" max="140" step="5" value="100" />
+              </label>
+              <label class="param">
+                <span class="param-head"><span>Przeszkody</span><span id="val-obstacle">100%</span></span>
+                <input type="range" id="param-obstacle" min="70" max="140" step="5" value="100" />
+              </label>
+            </div>
+          </div>
+          <p class="hint">LPM stawia i przesuwa · PPM usuwa zajęte</p>
+          <p class="hint">Start = czerwone auto, cel = zieleń, zaparkowane = czarne</p>
+        </aside>
+      </div>
+    </section>
+
+    <section id="view-train-setup" class="view hidden" hidden>
+      <header class="page-head">
+        <div>
+          <span class="eyebrow">Uczenie</span>
+          <h1>Ustaw trening</h1>
+        </div>
+        <button class="btn" id="train-setup-back">Wstecz</button>
+      </header>
+      <div class="setup-card">
+        <p class="setup-kicker">Na ilu krokach uczyć agenta</p>
+        <label class="setup-value">
+          <input type="number" id="train-steps-input" min="1000" max="1000000" step="1000" value="350000" />
+        </label>
+        <input type="range" id="train-steps-slider" min="1000" max="1000000" step="1000" value="350000" />
+        <div class="setup-scale">
+          <span id="train-steps-min-label">1 000</span>
+          <span id="train-steps-max-label">1 000 000</span>
+        </div>
+        <p class="status warn" id="train-setup-status"></p>
+        <button class="btn ok wide" id="train-setup-start">Start treningu</button>
+      </div>
+    </section>
+
+    <section id="view-training" class="view hidden" hidden>
+      <header class="page-head">
+        <div>
+          <span class="eyebrow">Uczenie</span>
+          <h1>Trening SAC</h1>
+        </div>
+        <button class="btn danger" id="train-stop">Przerwij</button>
+      </header>
+      <div class="progress-wrap">
+        <div class="progress-bar"><div class="progress-fill" id="train-progress"></div></div>
+        <p class="muted" id="train-progress-label"></p>
+      </div>
+      <div class="train-grid">
+        <div class="charts">
+          <div class="chart-card"><canvas id="chart-reward" width="600" height="280"></canvas></div>
+          <div class="chart-card"><canvas id="chart-avg" width="600" height="280"></canvas></div>
+        </div>
+        <aside class="stats" id="train-stats"></aside>
+      </div>
+      <p class="status danger" id="train-error"></p>
+    </section>
+
+    <section id="view-preview" class="view hidden" hidden>
+      <header class="page-head">
+        <div>
+          <span class="eyebrow">Gotowy model</span>
+          <h1>Podgląd agenta</h1>
+        </div>
+        <button class="btn" id="preview-back">Menu</button>
+      </header>
+      <p class="muted preview-hint">Wybierz mapę, żeby zobaczyć jak agent parkuje.</p>
+      <div class="preview-grid" id="preview-grid"></div>
+    </section>
+
+    <section id="view-game" class="view hidden" hidden>
+      <header class="page-head">
+        <div>
+          <span class="eyebrow">Symulacja</span>
+          <h1 class="game-cap" id="game-caption">Agent SAC</h1>
+        </div>
+        <button class="btn" id="game-back">Powrót</button>
+      </header>
+      <div class="canvas-frame game-frame">
+        <canvas id="game-canvas" width="600" height="600"></canvas>
+      </div>
+      <p class="game-banner" id="game-banner"></p>
+      <p class="hint game-keys"><kbd>Esc</kbd> Powrót · <kbd>R</kbd> reset · <kbd>L</kbd> lidar</p>
+    </section>
+  </main>
+
+  <div id="modal" class="modal hidden" hidden>
+    <div class="modal-box">
+      <p id="modal-text">Usunąć mapę?</p>
+      <div class="modal-actions">
+        <button class="btn danger" id="modal-yes">Tak</button>
+        <button class="btn" id="modal-no">Nie</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/render.js"></script>
+  <script src="/static/js/editor.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
