@@ -181,7 +181,7 @@ def _as_float(value, default):
 
 
 def map_dims(data):
-    """Wymiary i limity wynikające z parametrów mapy (skala wzgl. wartości bazowych)."""
+    # do parametrow i ich limitow na suwakach
     car_size = round(min(SIZE_MAX, max(SIZE_MIN, _as_float(data.get("car_size", 1.0), 1.0))), 2)
     spot_size = round(min(SIZE_MAX, max(SIZE_MIN, _as_float(data.get("spot_size", 1.0), 1.0))), 2)
     obstacle_size = round(
@@ -210,7 +210,7 @@ def map_dims(data):
         "obstacle_rear": REAR * obstacle_size,
     }
 
-
+# Ustawienia mapy
 def _normalize_map(data):
     start = data["start_pos"]
     dims = map_dims(data)
@@ -235,7 +235,7 @@ def _normalize_map(data):
         "obstacle_size": dims["obstacle_size"],
     }
 
-
+# jsonowanie mapki
 def _serialize_map(data):
     n = _normalize_map(data)
     return {
@@ -248,7 +248,7 @@ def _serialize_map(data):
         "obstacle_size": n["obstacle_size"],
     }
 
-
+#Ładowanie mapy
 def _load_store():
     global _store
     if _store is not None:
@@ -308,8 +308,8 @@ def save_map(map_name, data):
     return map_name
 
 
+# Do zapisywania map z webu
 def replace_all_maps(maps_by_name):
-    """Zastępuje cały spis map (używane przy zapisie z edytora web)."""
     global _store
     _store = {
         name: _normalize_map(data)

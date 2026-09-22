@@ -2,10 +2,8 @@ import math
 
 
 class Rect:
-    """AABB z interfejsem left/right/inflate (kolizje, miejsca parkingowe)."""
-
     __slots__ = ("x", "y", "width", "height")
-
+    # x,y - lewy gorny róg
     def __init__(self, x, y, width, height):
         self.x = int(x)
         self.y = int(y)
@@ -36,6 +34,7 @@ class Rect:
     def centery(self):
         return self.y + self.height // 2
 
+    # powiekszanie/pomniejszanie
     def inflate(self, dx, dy):
         dx, dy = int(dx), int(dy)
         return Rect(
@@ -53,6 +52,7 @@ class ParkingSpot:
 
 
 class Car:
+    # x, y - środek tylnej osi
     def __init__(self, x, y, width=25, height=60, color=(70, 70, 70), is_hollow=False,
                  wheelbase=40.0, rear_axle_offset_y=10.0):
         self.x = x
@@ -61,12 +61,14 @@ class Car:
         self.height = height
         self.color = color
         self.is_hollow = is_hollow
+        #rozstaw osi
         self.wheelbase = wheelbase
 
         scale = max(0.5, width / 25.0)
+        #rozmiary koła
         self.wheel_w = max(3, int(round(4 * scale)))
         self.wheel_h = max(6, int(round(10 * scale)))
-
+        #odl od tylnej osi do zderzaka
         self.rear_axle_offset_y = float(rear_axle_offset_y)
         self.theta = 0.0
         self.corners = []
@@ -74,7 +76,7 @@ class Car:
         self.update_position(self.x, self.y, 0.0)
 
     def update_position(self, x, y, theta=0.0):
-        """Aktualizuje pozycję środka tylnej osi, narożniki OBB i AABB."""
+        # x, y i nowe narozniki
         self.x = x
         self.y = y
         self.theta = theta
@@ -88,6 +90,7 @@ class Car:
             max(1, int(math.ceil(max(ys) - min(ys)))),
         )
 
+    # Oblicza rogi przy nowym srodku tylnej osi
     def _compute_corners(self, theta):
         fx, fy = math.cos(theta), math.sin(theta)
         rx, ry = -math.sin(theta), math.cos(theta)

@@ -64,9 +64,11 @@ class Critic(nn.Module):
 
     def __init__(self, state_dim, act_dim, hidden=256):
         super().__init__()
+        # sklejony wektor stanu (s_priv + 2 (v, kąt))
         self.q = _mlp(state_dim + act_dim, hidden, 1)
 
     def forward(self, state, action):
+        #sklejenie
         x = torch.cat([state, action], dim=-1)
         return self.q(x)
 
@@ -81,6 +83,7 @@ class ReplayBuffer:
         self.actions = np.zeros((self.capacity, act_dim), dtype=np.float32)
         self.rewards = np.zeros((self.capacity, 1), dtype=np.float32)
         self.dones = np.zeros((self.capacity, 1), dtype=np.float32)
+        # indeks gdzie moge wpisac kolejny wpis
         self.idx = 0
         self.size = 0
 

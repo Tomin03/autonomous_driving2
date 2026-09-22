@@ -1,4 +1,3 @@
-"""Trening SAC z asymetrycznym krytykiem (bez Sim2Real)."""
 
 import argparse
 import os
