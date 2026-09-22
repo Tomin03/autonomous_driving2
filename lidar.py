@@ -8,12 +8,11 @@ class LidarSensor:
         self.n_beams = n_beams
         self.max_range = float(max_range)
         self.fov = float(fov)
-        # 0 = przód pojazdu, dalej przeciwnie do ruchu wskazówek zegara
         self.relative_angles = np.linspace(0.0, self.fov, n_beams, endpoint=False)
         self.segments = np.zeros((0, 4), dtype=np.float64)
 
+    # W segs zapisywane są wszystkie przeszkody i bandy dla Lidara potem
     def set_scene(self, obstacles, bounds):
-        """Cachuje krawędzie przeszkód i ramki mapy (statyczne w epizodzie)."""
         minx, miny, maxx, maxy = bounds
         segs = [
             (minx, miny, maxx, miny),
@@ -31,12 +30,9 @@ class LidarSensor:
         self.segments = np.asarray(segs, dtype=np.float64)
 
     def scan(self, origin, heading):
-        """
-        Mierzy odległości i punkty trafień.
-        :return: ranges (n_beams,), hits (n_beams, 2)
-        """
         ox, oy = origin
         hits = np.zeros((self.n_beams, 2), dtype=np.float32)
+        #Jeśli nic nie wyłapuje
         if self.segments.shape[0] == 0:
             ranges = np.full(self.n_beams, self.max_range, dtype=np.float32)
             angles = heading + self.relative_angles
@@ -53,13 +49,18 @@ class LidarSensor:
         sx = self.segments[:, 2] - x1
         sy = self.segments[:, 3] - y1
 
+        # Czy linie równoległe (0 - tak)
         denom = dx[:, None] * sy[None, :] - dy[:, None] * sx[None, :]
+        # qx, qy - wektor od auta do pocz. krawędzi
         qx = x1[None, :] - ox
         qy = y1[None, :] - oy
         safe = np.where(np.abs(denom) > 1e-9, denom, 1.0)
+        # t - jak przebiega odcinek
+        # u - w której częsci odcinka przecięcie
         t = (qx * sy[None, :] - qy * sx[None, :]) / safe
         u = (qx * dy[:, None] - qy * dx[:, None]) / safe
 
+        # Tylko pary, które się krzyżują
         valid = (
             (np.abs(denom) > 1e-9)
             & (t >= 1e-6)

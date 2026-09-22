@@ -1,5 +1,3 @@
-"""Aplikacja webowa: FastAPI + frontend JS (zamiast pygame)."""
-
 import argparse
 import asyncio
 import os
@@ -423,9 +421,7 @@ async def game_ws(websocket: WebSocket):
                 if map_name not in names:
                     map_name = names[0]
                 if env is None:
-                    env = SteeringParkingEnv(
-                        map_name=map_name, render_mode=None, create_window=False
-                    )
+                    env = SteeringParkingEnv(map_name=map_name)
                 else:
                     env.set_map(map_name)
                 try:

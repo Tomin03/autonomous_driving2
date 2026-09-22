@@ -2,7 +2,7 @@ import math
 
 
 class Rect:
-    """AABB z interfejsem zbliżonym do pygame.Rect (left/right/inflate)."""
+    """AABB z interfejsem left/right/inflate (kolizje, miejsca parkingowe)."""
 
     __slots__ = ("x", "y", "width", "height")
 
@@ -36,18 +36,6 @@ class Rect:
     def centery(self):
         return self.y + self.height // 2
 
-    @property
-    def w(self):
-        return self.width
-
-    @property
-    def h(self):
-        return self.height
-
-    @property
-    def topleft(self):
-        return (self.x, self.y)
-
     def inflate(self, dx, dy):
         dx, dy = int(dx), int(dy)
         return Rect(
@@ -57,27 +45,11 @@ class Rect:
             self.height + dy,
         )
 
-    def collidepoint(self, x, y=None):
-        if y is None:
-            x, y = x
-        return self.left <= x < self.right and self.top <= y < self.bottom
-
 
 class ParkingSpot:
-    def __init__(self, x, y, width=45, height=80, is_target=False, color=(180, 180, 180)):
+    def __init__(self, x, y, width=45, height=80, is_target=False):
         self.rect = Rect(x, y, width, height)
         self.is_target = is_target
-        self.color = (0, 200, 0) if is_target else color
-
-    def draw(self, surface):
-        import pygame
-
-        if self.is_target:
-            fill = pygame.Surface((self.rect.width, self.rect.height), pygame.SRCALPHA)
-            fill.fill((0, 200, 0, 50))
-            surface.blit(fill, self.rect.topleft)
-        width = 3 if self.is_target else 2
-        pygame.draw.rect(surface, self.color, self.rect, width=width)
 
 
 class Car:
@@ -94,7 +66,6 @@ class Car:
         scale = max(0.5, width / 25.0)
         self.wheel_w = max(3, int(round(4 * scale)))
         self.wheel_h = max(6, int(round(10 * scale)))
-        self.wheel_color = (20, 20, 20)
 
         self.rear_axle_offset_y = float(rear_axle_offset_y)
         self.theta = 0.0
@@ -144,46 +115,3 @@ class Car:
             self.x + math.cos(self.theta) * offset,
             self.y + math.sin(self.theta) * offset,
         )
-
-    def draw(self, surface, steer_angle=0.0):
-        """Rysuje karoserię i 4 koła. Sprite skierowany w górę (przód przy y=0)."""
-        import pygame
-
-        body_rect = pygame.Rect(0, 0, self.width, self.height)
-        if self.is_hollow:
-            pygame.draw.rect(
-                surface, self.color, body_rect, width=3, border_radius=4
-            )
-        else:
-            pygame.draw.rect(surface, self.color, body_rect, border_radius=4)
-
-        rear_y = self.height - self.rear_axle_offset_y - self.wheel_h // 2
-        front_y = rear_y - int(self.wheelbase)
-        left_x = 1
-        right_x = self.width - self.wheel_w - 1
-
-        front_wheels = [
-            pygame.Rect(left_x, front_y, self.wheel_w, self.wheel_h),
-            pygame.Rect(right_x, front_y, self.wheel_w, self.wheel_h),
-        ]
-        rear_wheels = [
-            pygame.Rect(left_x, rear_y, self.wheel_w, self.wheel_h),
-            pygame.Rect(right_x, rear_y, self.wheel_w, self.wheel_h),
-        ]
-
-        for w_rect in rear_wheels:
-            self._blit_wheel(surface, w_rect, 0.0)
-        for w_rect in front_wheels:
-            self._blit_wheel(surface, w_rect, steer_angle)
-
-    def _blit_wheel(self, surface, rect, angle_rad):
-        import pygame
-
-        wheel = pygame.Surface((self.wheel_w, self.wheel_h), pygame.SRCALPHA)
-        pygame.draw.rect(
-            wheel, self.wheel_color, wheel.get_rect(), border_radius=1
-        )
-        if angle_rad != 0.0:
-            wheel = pygame.transform.rotate(wheel, -math.degrees(angle_rad))
-        blit_rect = wheel.get_rect(center=rect.center)
-        surface.blit(wheel, blit_rect)

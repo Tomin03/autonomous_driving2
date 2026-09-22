@@ -12,8 +12,6 @@ python app.py
 
 Otwórz w przeglądarce: [http://127.0.0.1:8000](http://127.0.0.1:8000)
 
-Można też: `python steering_logic.py`
-
 W podglądzie agenta klawisz `L` włącza/wyłącza wizualizację wiązek LiDAR, `R` resetuje epizod, `ESC` wraca do kafelków.
 
 ## Trening

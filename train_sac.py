@@ -15,10 +15,9 @@ from steering_logic import SteeringParkingEnv
 CONTROL_DT = 0.05
 
 
-def make_env(args, render_mode=None):
+def make_env(args):
     return SteeringParkingEnv(
         map_name=args.maps[0],
-        render_mode=render_mode,
         n_lidar_beams=args.lidar_beams,
         lidar_max_range=args.lidar_range,
         randomize_maps=len(args.maps) > 1,
@@ -69,8 +68,8 @@ def train(args, progress_cb=None, stop_event=None):
     print("Log: R = nagroda epizodu, avg20 = srednia z ostatnich 20 epizodow")
     print("Eval jest deterministyczny (bez szumu SAC); ok= w treningu liczy tez przypadkowe sukcesy z eksploracji")
 
-    env = make_env(args, render_mode=None)
-    eval_env = make_env(args, render_mode=None)
+    env = make_env(args)
+    eval_env = make_env(args)
     agent = SACAgent(
         env.obs_dim,
         env.act_dim,

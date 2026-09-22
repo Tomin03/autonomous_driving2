@@ -1,17 +1,10 @@
 import math
 import os
-import sys
 import numpy as np
 from items import Car
 from physics import KinematicBicycleModel
 from maps import get_map, list_map_names, load_map, map_dims
 from lidar import LidarSensor
-
-os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-try:
-    import pygame
-except ImportError:
-    pygame = None
 
 
 def _project(corners, axis):
@@ -64,7 +57,6 @@ class SteeringParkingEnv:
     def __init__(
         self,
         map_name="map_1",
-        render_mode="human",
         n_lidar_beams=16,
         lidar_max_range=280.0,
         randomize_maps=False,
@@ -72,9 +64,7 @@ class SteeringParkingEnv:
         time_limit=False,
         max_episode_steps=500,
         train_maps=None,
-        create_window=True,
     ):
-        self.render_mode = render_mode
         self.randomize_maps = randomize_maps
         self.spawn_noise = spawn_noise
         self.time_limit = time_limit
@@ -83,28 +73,9 @@ class SteeringParkingEnv:
         if not self.train_maps:
             self.train_maps = ["map_1"]
         self.rng = np.random.default_rng()
-        self._owns_window = False
 
         self.width = 600
         self.height = 600
-
-        if render_mode == "human" and pygame is not None:
-            pygame.init()
-            pygame.font.init()
-            self.screen = pygame.Surface((self.width, self.height))
-            if create_window:
-                self._window = pygame.display.set_mode((self.width, self.height))
-                pygame.display.set_caption("Parking Environment - Bicycle Kinematic Model")
-                self._owns_window = True
-            else:
-                self._window = None
-            self.clock = pygame.time.Clock()
-            self.hud_font = pygame.font.SysFont("Consolas", 14)
-        else:
-            self.screen = None
-            self.clock = None
-            self.hud_font = None
-            self._window = None
 
         # Konfiguracja wymiarów (piksele) — nadpisywana parametrami mapy
         self.spot_w, self.spot_h = 50, 88
@@ -675,7 +646,7 @@ class SteeringParkingEnv:
         )
 
     def get_render_state(self, reward=0.0, done=False, info=None):
-        """Stan planszy do narysowania w przeglądarce (bez pygame)."""
+        """Stan planszy do narysowania w przeglądarce."""
         origin = self.car.center()
         info = info or {}
 
@@ -747,179 +718,9 @@ class SteeringParkingEnv:
             },
         }
 
-    def render(self, dest=None, pos=(0, 0), flip=True):
-        if self.screen is None:
-            return
-
-        self.screen.fill((240, 240, 240))
-
-        pygame.draw.rect(self.screen, (30, 30, 30), (0, 0, self.width, self.height), 8)
-
-        for spot in self.spots:
-            spot.draw(self.screen)
-        self.target_spot.draw(self.screen)
-
-        for obstacle in self.obstacles:
-            self._draw_rotated_car(obstacle, obstacle.theta)
-
-        if self.show_lidar:
-            self._draw_lidar()
-
-        self._draw_rotated_car(self.car, self.theta, self.phi)
-        self._draw_hud()
-
-        target = dest if dest is not None else self._window
-        if target is not None:
-            target.blit(self.screen, pos)
-        if flip and target is not None:
-            pygame.display.flip()
-
-    def _draw_lidar(self):
-        origin = self.car.center()
-        ox, oy = int(origin[0]), int(origin[1])
-        for i, dist in enumerate(self.lidar_ranges):
-            hx, hy = self.lidar_hits[i]
-            t = float(np.clip(dist / self.lidar_max_range, 0.0, 1.0))
-            color = (int(220 * (1.0 - t)), int(180 * t), 40)
-            pygame.draw.line(self.screen, color, (ox, oy), (int(hx), int(hy)), 1)
-            pygame.draw.circle(self.screen, color, (int(hx), int(hy)), 2)
-        pygame.draw.circle(self.screen, (255, 140, 0), (ox, oy), 3)
-
-    def _draw_hud(self):
-        if self.hud_font is None:
-            return
-        min_lidar = float(np.min(self.lidar_ranges))
-        if self.hybrid_escape:
-            ctrl = "COFANIE" if self._escape_phase == "backup" else "ESCAPE"
-        else:
-            ctrl = ""
-        lines = [
-            f"v={self.v:6.1f}  phi={math.degrees(self.phi):5.1f}deg",
-            f"lidar_min={min_lidar:5.1f}  dist={self._dist_to_target():5.1f}",
-            f"mapa={self.map_name}  parked={self._is_fully_parked()}"
-            + (f"  {ctrl}" if ctrl else ""),
-        ]
-        y = 10
-        for line in lines:
-            surf = self.hud_font.render(line, True, (20, 20, 20))
-            self.screen.blit(surf, (12, y))
-            y += 16
-
-    def _draw_rotated_car(self, car, theta, steer_angle=0.0):
-        """Obrót wokół tylnej osi."""
-        image = pygame.Surface((car.width, car.height), pygame.SRCALPHA)
-        car.draw(image, steer_angle=steer_angle)
-
-        degrees = -math.degrees(theta) - 90.0
-        pivot = pygame.math.Vector2(
-            car.width / 2.0, car.height - car.rear_axle_offset_y
-        )
-        origin = pygame.math.Vector2(car.x, car.y)
-
-        image_rect = image.get_rect(
-            topleft=(origin.x - pivot.x, origin.y - pivot.y)
-        )
-        offset = origin - pygame.math.Vector2(image_rect.center)
-        rotated_offset = offset.rotate(-degrees)
-        rotated_image = pygame.transform.rotate(image, degrees)
-        rotated_center = origin - rotated_offset
-        draw_rect = rotated_image.get_rect(center=rotated_center)
-
-        self.screen.blit(rotated_image, draw_rect.topleft)
-
     def close(self):
-        if self._owns_window and pygame is not None:
-            pygame.quit()
+        return
 
-
-def _apply_keyboard(env, keys, dt, v_cmd, delta_cmd):
-    if pygame is None:
-        return v_cmd, delta_cmd
-    v_rate = 180.0
-    delta_rate = math.radians(120.0)
-
-    if keys[pygame.K_w] or keys[pygame.K_UP]:
-        v_cmd += v_rate * dt
-    elif keys[pygame.K_s] or keys[pygame.K_DOWN]:
-        v_cmd -= v_rate * dt
-    else:
-        if abs(v_cmd) <= v_rate * dt:
-            v_cmd = 0.0
-        else:
-            v_cmd -= math.copysign(v_rate * dt, v_cmd)
-
-    if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-        delta_cmd -= delta_rate * dt
-    elif keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-        delta_cmd += delta_rate * dt
-    else:
-        if abs(delta_cmd) <= delta_rate * dt:
-            delta_cmd = 0.0
-        else:
-            delta_cmd -= math.copysign(delta_rate * dt, delta_cmd)
-
-    v_cmd = float(np.clip(v_cmd, -env.max_v / 2, env.max_v))
-    delta_cmd = float(np.clip(delta_cmd, -env.max_phi, env.max_phi))
-    return v_cmd, delta_cmd
-
-
-def draw_menu(screen, font, title_font, map_list, mouse_pos, agent_kind):
-    """Rysuje graficzny interfejs wyboru mapy i trybu."""
-    if pygame is None:
-        return [], None
-    screen.fill((30, 35, 45))
-
-    title_surf = title_font.render("WYBÓR MAPY", True, (255, 255, 255))
-    title_rect = title_surf.get_rect(center=(300, 42))
-    screen.blit(title_surf, title_rect)
-
-    mode_labels = {
-        "manual": ("GRAJ RECZNIE", (70, 130, 180)),
-        "sac": ("AGENT SAC", (80, 180, 120)),
-    }
-    mode_label, mode_color = mode_labels.get(agent_kind, mode_labels["manual"])
-    mode_rect = pygame.Rect(160, 72, 280, 40)
-    is_mode_hover = mode_rect.collidepoint(mouse_pos)
-    pygame.draw.rect(screen, mode_color, mode_rect, border_radius=8)
-    pygame.draw.rect(
-        screen,
-        (255, 255, 255) if is_mode_hover else (100, 110, 125),
-        mode_rect,
-        2,
-        border_radius=8,
-    )
-    mode_surf = font.render(f"Tryb: {mode_label}   [A]", True, (255, 255, 255))
-    screen.blit(mode_surf, mode_surf.get_rect(center=mode_rect.center))
-
-    buttons = []
-    w, h = 280, 52
-    x = (600 - w) // 2
-
-    for i, map_name in enumerate(map_list):
-        y = 128 + i * 64
-
-        rect = pygame.Rect(x, y, w, h)
-        buttons.append((rect, map_name))
-
-        is_hover = rect.collidepoint(mouse_pos)
-        color = (70, 130, 180) if is_hover else (50, 60, 75)
-        border_color = (255, 255, 255) if is_hover else (100, 110, 125)
-
-        pygame.draw.rect(screen, color, rect, border_radius=8)
-        pygame.draw.rect(screen, border_color, rect, 2, border_radius=8)
-
-        text_str = f"Mapa {i+1}   [{i+1}]"
-        txt_surf = font.render(text_str, True, (255, 255, 255))
-        txt_rect = txt_surf.get_rect(center=rect.center)
-        screen.blit(txt_surf, txt_rect)
-
-    hint = font.render("python train_sac.py", True, (170, 175, 185))
-    screen.blit(hint, hint.get_rect(center=(300, 560)))
-
-    return buttons, mode_rect
-
-
-AGENT_CYCLE = ("manual", "sac")
 
 AGENT_MODEL_PATHS = {
     "sac": [
