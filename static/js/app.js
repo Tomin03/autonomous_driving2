@@ -2,6 +2,7 @@ const views = {
   MAIN: document.getElementById("view-main"),
   MAP_LIST: document.getElementById("view-maps"),
   EDITOR: document.getElementById("view-editor"),
+  TRAIN_MAPS: document.getElementById("view-train-maps"),
   TRAIN_SETUP: document.getElementById("view-train-setup"),
   TRAINING: document.getElementById("view-training"),
   PREVIEW: document.getElementById("view-preview"),
@@ -29,6 +30,8 @@ let trainTimer = null;
 let ws = null;
 let currentView = "MAIN";
 let mapsDraft = [];
+let trainMaps = [];
+let trainMapSelection = null;
 
 function cloneMap(item) {
   return {
@@ -44,48 +47,68 @@ function defaultNewMap() {
     target_spot: { x: 400, y: 250, orientation: "vertical" },
     occupied_spots: [],
     max_v: CFG.max_v ?? 90,
-    car_size: 1,
-    spot_size: 1,
-    obstacle_size: 1,
+    car_w: CFG.car_w ?? 24,
+    car_h: CFG.car_h ?? 60,
+    spot_w: CFG.spot_w ?? 44,
+    spot_h: CFG.spot_h ?? 88,
+    obstacle_w: CFG.spot_w ?? 44,
+    obstacle_h: CFG.spot_h ?? 88,
   };
 }
 
 function paramEls() {
   return {
     vmax: document.getElementById("param-vmax"),
-    car: document.getElementById("param-car"),
-    spot: document.getElementById("param-spot"),
-    obstacle: document.getElementById("param-obstacle"),
     vmaxVal: document.getElementById("val-vmax"),
-    carVal: document.getElementById("val-car"),
-    spotVal: document.getElementById("val-spot"),
-    obstacleVal: document.getElementById("val-obstacle"),
+    carW: document.getElementById("param-car-w"),
+    carH: document.getElementById("param-car-h"),
+    spotW: document.getElementById("param-spot-w"),
+    spotH: document.getElementById("param-spot-h"),
+    obstacleW: document.getElementById("param-obstacle-w"),
+    obstacleH: document.getElementById("param-obstacle-h"),
   };
+}
+
+function applyDimLimits(input, key) {
+  const lim = CFG.dim_limits?.[key];
+  if (!lim || !input) return;
+  input.min = pxToM(lim[0]).toFixed(2);
+  input.max = pxToM(lim[1]).toFixed(2);
+  input.step = "0.01";
+}
+
+function formatSpeed(px) {
+  const ms = pxToM(px);
+  const kmh = ms * 3.6;
+  const fmt = (n) => n.toLocaleString("pl-PL", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  return `<span>${fmt(kmh)} km/h</span><span>(${fmt(ms)} m/s)</span>`;
 }
 
 function syncEditorParamLabels() {
   const el = paramEls();
-  el.vmaxVal.textContent = String(el.vmax.value);
-  el.carVal.textContent = `${el.car.value}%`;
-  el.spotVal.textContent = `${el.spot.value}%`;
-  el.obstacleVal.textContent = `${el.obstacle.value}%`;
+  el.vmaxVal.innerHTML = formatSpeed(kmhToPx(el.vmax.value));
 }
 
 function fillEditorParams() {
   const d = editor.data || {};
+  const sz = sizesOf(d);
   const el = paramEls();
-  el.vmax.min = CFG.max_v_min ?? 40;
-  el.vmax.max = CFG.max_v_max ?? 140;
-  const pctMin = Math.round((CFG.size_min ?? 0.7) * 100);
-  const pctMax = Math.round((CFG.size_max ?? 1.4) * 100);
-  [el.car, el.spot, el.obstacle].forEach((slider) => {
-    slider.min = pctMin;
-    slider.max = pctMax;
-  });
-  el.vmax.value = Math.round(d.max_v ?? CFG.max_v ?? 90);
-  el.car.value = Math.round((d.car_size ?? 1) * 100);
-  el.spot.value = Math.round((d.spot_size ?? 1) * 100);
-  el.obstacle.value = Math.round((d.obstacle_size ?? 1) * 100);
+  el.vmax.min = CFG.max_v_kmh_min ?? 5;
+  el.vmax.max = CFG.max_v_kmh_max ?? 20;
+  el.vmax.step = "0.5";
+  applyDimLimits(el.carW, "car_w");
+  applyDimLimits(el.carH, "car_h");
+  applyDimLimits(el.spotW, "spot_w");
+  applyDimLimits(el.spotH, "spot_h");
+  applyDimLimits(el.obstacleW, "obstacle_w");
+  applyDimLimits(el.obstacleH, "obstacle_h");
+  el.vmax.value = pxToKmh(d.max_v ?? CFG.max_v ?? 90).toFixed(1);
+  el.carW.value = formatM(sz.car_w);
+  el.carH.value = formatM(sz.car_h);
+  el.spotW.value = formatM(sz.spot_w);
+  el.spotH.value = formatM(sz.spot_h);
+  el.obstacleW.value = formatM(sz.obstacle_w);
+  el.obstacleH.value = formatM(sz.obstacle_h);
   syncEditorParamLabels();
 }
 
@@ -100,14 +123,36 @@ function rescaleSpotFromCenter(cfg, oldW, oldH, newW, newH) {
   cfg.y = y;
 }
 
+function stepDim(input, key, dir) {
+  const current = mToPx(input.value);
+  let px = Number.isFinite(current) ? current : clampDim(key, CFG[key] ?? 0);
+  const lim = CFG.dim_limits?.[key] || [px, px];
+  for (let i = 0; i < 12; i += 1) {
+    const next = clampDim(key, mToPx(pxToM(px) + dir * 0.05));
+    if (next !== px || next === lim[0] || next === lim[1]) {
+      px = next;
+      break;
+    }
+  }
+  input.value = formatM(px);
+  applyEditorParams();
+}
+
 function applyEditorParams() {
   if (!editor.data) return;
   const prev = sizesOf(editor.data);
   const el = paramEls();
-  editor.data.max_v = Number(el.vmax.value);
-  editor.data.car_size = Number(el.car.value) / 100;
-  editor.data.spot_size = Number(el.spot.value) / 100;
-  editor.data.obstacle_size = Number(el.obstacle.value) / 100;
+  editor.data.max_v = kmhToPx(el.vmax.value);
+  const readDim = (input, key, prevPx) => {
+    const px = mToPx(input.value);
+    return Number.isFinite(px) ? clampDim(key, px) : prevPx;
+  };
+  editor.data.car_w = readDim(el.carW, "car_w", prev.car_w);
+  editor.data.car_h = readDim(el.carH, "car_h", prev.car_h);
+  editor.data.spot_w = readDim(el.spotW, "spot_w", prev.spot_w);
+  editor.data.spot_h = readDim(el.spotH, "spot_h", prev.spot_h);
+  editor.data.obstacle_w = readDim(el.obstacleW, "obstacle_w", prev.obstacle_w);
+  editor.data.obstacle_h = readDim(el.obstacleH, "obstacle_h", prev.obstacle_h);
   const next = sizesOf(editor.data);
   if (editor.data.target_spot) {
     rescaleSpotFromCenter(
@@ -255,13 +300,22 @@ async function renderPreview() {
 }
 
 function openEditor(name, data) {
+  const src = data || {};
+  const fromScale = (value, scale, base) =>
+    value != null ? value : Math.round(base * Number(scale ?? 1));
   const next = {
-    max_v: CFG.max_v ?? 90,
-    car_size: 1,
-    spot_size: 1,
-    obstacle_size: 1,
-    ...data,
+    ...src,
+    max_v: src.max_v ?? CFG.max_v ?? 90,
+    car_w: fromScale(src.car_w, src.car_size, CFG.car_w ?? 24),
+    car_h: fromScale(src.car_h, src.car_size, CFG.car_h ?? 60),
+    spot_w: fromScale(src.spot_w, src.spot_size, CFG.spot_w ?? 44),
+    spot_h: fromScale(src.spot_h, src.spot_size, CFG.spot_h ?? 88),
+    obstacle_w: fromScale(src.obstacle_w, src.obstacle_size, CFG.spot_w ?? 44),
+    obstacle_h: fromScale(src.obstacle_h, src.obstacle_size, CFG.spot_h ?? 88),
   };
+  delete next.car_size;
+  delete next.spot_size;
+  delete next.obstacle_size;
   editor.load(name, next);
   fillEditorParams();
   document.getElementById("editor-title").textContent = `Edytor — ${mapLabel(name)}`;
@@ -385,14 +439,47 @@ async function pollTrain() {
   }
 }
 
+function renderTrainMapPicker() {
+  const grid = document.getElementById("train-map-grid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  trainMaps.forEach((item) => {
+    const selected = trainMapSelection.has(item.name);
+    const tile = document.createElement("div");
+    tile.className = `tile train-map${selected ? " selected" : ""}`;
+    const canvas = document.createElement("canvas");
+    canvas.width = 280;
+    canvas.height = 168;
+    drawThumb(canvas, item.data);
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = item.label;
+    const check = document.createElement("span");
+    check.className = "check";
+    check.textContent = "✓";
+    tile.append(canvas, label, check);
+    tile.onclick = () => {
+      if (trainMapSelection.has(item.name)) trainMapSelection.delete(item.name);
+      else trainMapSelection.add(item.name);
+      renderTrainMapPicker();
+    };
+    grid.appendChild(tile);
+  });
+}
+
 async function startTraining() {
   const setupStatus = document.getElementById("train-setup-status");
   const timesteps = clampTrainSteps(Number(document.getElementById("train-steps-input").value));
+  const maps = [...trainMapSelection];
+  if (!maps.length) {
+    if (setupStatus) setupStatus.textContent = "Wybierz przynajmniej jedną mapę.";
+    return;
+  }
   setTrainSteps(timesteps);
   try {
     await api("/api/train/start", {
       method: "POST",
-      body: JSON.stringify({ timesteps }),
+      body: JSON.stringify({ timesteps, maps }),
     });
     if (setupStatus) setupStatus.textContent = "";
     mainStatus.textContent = "";
@@ -428,8 +515,29 @@ function setTrainSteps(value) {
   input.value = String(steps);
 }
 
-function openTrainSetup() {
+async function openTrainSetup() {
   mainStatus.textContent = "";
+  const { maps } = await api("/api/maps");
+  trainMaps = maps;
+  const names = new Set(maps.map((item) => item.name));
+  if (!trainMapSelection) {
+    trainMapSelection = new Set(names);
+  } else {
+    trainMapSelection = new Set([...trainMapSelection].filter((name) => names.has(name)));
+    if (!trainMapSelection.size) trainMapSelection = new Set(names);
+  }
+  renderTrainMapPicker();
+  document.getElementById("train-maps-status").textContent = "";
+  show("TRAIN_MAPS");
+}
+
+function openTrainSteps() {
+  const status = document.getElementById("train-maps-status");
+  if (!trainMapSelection.size) {
+    status.textContent = "Wybierz przynajmniej jedną mapę.";
+    return;
+  }
+  status.textContent = "";
   const { min, max, fallback } = trainStepsBounds();
   const slider = document.getElementById("train-steps-slider");
   const input = document.getElementById("train-steps-input");
@@ -455,7 +563,9 @@ document.getElementById("btn-maps").onclick = async () => {
   show("MAP_LIST");
 };
 document.getElementById("btn-train").onclick = openTrainSetup;
-document.getElementById("train-setup-back").onclick = () => show("MAIN");
+document.getElementById("train-maps-back").onclick = () => show("MAIN");
+document.getElementById("train-maps-confirm").onclick = openTrainSteps;
+document.getElementById("train-setup-back").onclick = () => show("TRAIN_MAPS");
 document.getElementById("train-setup-start").onclick = startTraining;
 document.getElementById("train-steps-slider").addEventListener("input", (e) => {
   setTrainSteps(e.target.value);
@@ -502,8 +612,88 @@ document.getElementById("editor-cancel").onclick = () => {
   renderMapList();
   show("MAP_LIST");
 };
-["param-vmax", "param-car", "param-spot", "param-obstacle"].forEach((id) => {
-  document.getElementById(id).addEventListener("input", applyEditorParams);
+function ensureDimensionFields() {
+  if (document.getElementById("param-car-w")) return;
+  const box = document.querySelector("#view-editor .editor-params");
+  if (!box) return;
+  ["param-car", "param-spot", "param-obstacle"].forEach((id) => {
+    document.getElementById(id)?.closest("label")?.remove();
+  });
+  box.insertAdjacentHTML(
+    "beforeend",
+    `<div class="param">
+      <span class="param-head"><span>Auto</span></span>
+      <div class="dim-row">
+        <label>Szerokość <input type="text" inputmode="decimal" id="param-car-w" value="1,36" /><span class="unit">m</span></label>
+        <label>Długość <input type="text" inputmode="decimal" id="param-car-h" value="3,41" /><span class="unit">m</span></label>
+      </div>
+    </div>
+    <div class="param">
+      <span class="param-head"><span>Docelowe miejsce parkingowe</span></span>
+      <div class="dim-row">
+        <label>Szerokość <input type="text" inputmode="decimal" id="param-spot-w" value="2,50" /><span class="unit">m</span></label>
+        <label>Długość <input type="text" inputmode="decimal" id="param-spot-h" value="5,00" /><span class="unit">m</span></label>
+      </div>
+    </div>
+    <div class="param">
+      <span class="param-head"><span>Zajęte miejsca</span></span>
+      <div class="dim-row">
+        <label>Szerokość <input type="text" inputmode="decimal" id="param-obstacle-w" value="2,50" /><span class="unit">m</span></label>
+        <label>Długość <input type="text" inputmode="decimal" id="param-obstacle-h" value="5,00" /><span class="unit">m</span></label>
+      </div>
+    </div>`
+  );
+}
+
+ensureDimensionFields();
+[
+  "param-vmax",
+  "param-car-w",
+  "param-car-h",
+  "param-spot-w",
+  "param-spot-h",
+  "param-obstacle-w",
+  "param-obstacle-h",
+].forEach((id) => {
+  const input = document.getElementById(id);
+  if (!input) return;
+  input.addEventListener("input", () => {
+    if (id !== "param-vmax" && !/^\d*(,\d*)?$/.test(input.value)) return;
+    applyEditorParams();
+  });
+  if (id === "param-vmax") return;
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    const key = {
+      "param-car-w": "car_w",
+      "param-car-h": "car_h",
+      "param-spot-w": "spot_w",
+      "param-spot-h": "spot_h",
+      "param-obstacle-w": "obstacle_w",
+      "param-obstacle-h": "obstacle_h",
+    }[id];
+    stepDim(input, key, e.key === "ArrowUp" ? 1 : -1);
+  });
+  input.addEventListener("change", () => {
+    const key = {
+      "param-car-w": "car_w",
+      "param-car-h": "car_h",
+      "param-spot-w": "spot_w",
+      "param-spot-h": "spot_h",
+      "param-obstacle-w": "obstacle_w",
+      "param-obstacle-h": "obstacle_h",
+    }[id];
+    const px = mToPx(input.value);
+    if (Number.isFinite(px)) input.value = formatM(clampDim(key, px));
+  });
+});
+document.querySelector("#view-editor .editor-params")?.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-step]");
+  if (!btn) return;
+  const input = document.getElementById(btn.dataset.for);
+  if (!input) return;
+  stepDim(input, btn.dataset.key, Number(btn.dataset.step));
 });
 document.getElementById("editor-rotate").onclick = () => editor.rotateSelected();
 document.getElementById("editor-delete").onclick = () => editor.deleteSelected();
@@ -549,8 +739,10 @@ window.addEventListener("keydown", (e) => {
     if (currentView === "MAP_LIST") {
       mapsDraft = [];
       show("MAIN");
-    } else if (currentView === "TRAIN_SETUP") {
+    } else if (currentView === "TRAIN_MAPS") {
       show("MAIN");
+    } else if (currentView === "TRAIN_SETUP") {
+      show("TRAIN_MAPS");
     } else if (currentView === "EDITOR") {
       renderMapList();
       show("MAP_LIST");
@@ -569,7 +761,8 @@ window.addEventListener("keydown", (e) => {
       renderPreview().then(() => show("PREVIEW"));
     }
   }
-  if (currentView === "EDITOR") {
+  const typing = e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable);
+  if (currentView === "EDITOR" && !typing) {
     if (e.key === "r" || e.key === "R") editor.rotateSelected();
     if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();

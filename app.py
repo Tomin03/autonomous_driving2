@@ -14,11 +14,13 @@ from maps import (
     CAR_H,
     CAR_W,
     DEFAULT_MAX_V,
+    MAX_V_KMH_MAX,
+    MAX_V_KMH_MIN,
     MAX_V_MAX,
     MAX_V_MIN,
+    DIM_LIMITS,
+    PX_PER_M,
     REAR,
-    SIZE_MAX,
-    SIZE_MIN,
     SPOT_H,
     SPOT_W,
     default_new_map,
@@ -141,9 +143,12 @@ def map_to_json(data: dict) -> dict:
         "target_spot": dict(data["target_spot"]),
         "occupied_spots": [dict(s) for s in data.get("occupied_spots", [])],
         "max_v": dims["max_v"],
-        "car_size": dims["car_size"],
-        "spot_size": dims["spot_size"],
-        "obstacle_size": dims["obstacle_size"],
+        "car_w": dims["car_w"],
+        "car_h": dims["car_h"],
+        "spot_w": dims["spot_w"],
+        "spot_h": dims["spot_h"],
+        "obstacle_w": dims["obstacle_w"],
+        "obstacle_h": dims["obstacle_h"],
     }
 
 
@@ -182,9 +187,12 @@ class MapPayload(BaseModel):
     target_spot: dict[str, Any]
     occupied_spots: list[dict[str, Any]] = []
     max_v: float = DEFAULT_MAX_V
-    car_size: float = 1.0
-    spot_size: float = 1.0
-    obstacle_size: float = 1.0
+    car_w: int = CAR_W
+    car_h: int = CAR_H
+    spot_w: int = SPOT_W
+    spot_h: int = SPOT_H
+    obstacle_w: int = SPOT_W
+    obstacle_h: int = SPOT_H
 
 
 class MapItem(BaseModel):
@@ -198,6 +206,7 @@ class MapsBulkPayload(BaseModel):
 
 class TrainStartPayload(BaseModel):
     timesteps: int = TRAIN_STEPS_DEFAULT
+    maps: Optional[list[str]] = None
 
 
 @asynccontextmanager
@@ -213,6 +222,7 @@ app = FastAPI(title="Autonomous Parking", lifespan=lifespan)
 @app.get("/api/config")
 def api_config():
     return {
+        "px_per_m": PX_PER_M,
         "board": BOARD,
         "snap": SNAP,
         "spot_w": SPOT_W,
@@ -223,8 +233,9 @@ def api_config():
         "max_v": DEFAULT_MAX_V,
         "max_v_min": MAX_V_MIN,
         "max_v_max": MAX_V_MAX,
-        "size_min": SIZE_MIN,
-        "size_max": SIZE_MAX,
+        "max_v_kmh_min": MAX_V_KMH_MIN,
+        "max_v_kmh_max": MAX_V_KMH_MAX,
+        "dim_limits": DIM_LIMITS,
         "train_steps_min": TRAIN_STEPS_MIN,
         "train_steps_max": TRAIN_STEPS_MAX,
         "train_steps_default": TRAIN_STEPS_DEFAULT,
@@ -323,9 +334,16 @@ def api_train_status():
 
 @app.post("/api/train/start")
 def api_train_start(payload: TrainStartPayload):
-    names = list_map_names()
+    known = list_map_names()
+    if payload.maps is None:
+        names = known
+    else:
+        unknown = [name for name in payload.maps if name not in known]
+        if unknown:
+            raise HTTPException(status_code=400, detail="Nieznana mapa: " + ", ".join(unknown))
+        names = [name for name in payload.maps if name in known]
     if not names:
-        raise HTTPException(status_code=400, detail="Najpierw dodaj przynajmniej jedną mapę.")
+        raise HTTPException(status_code=400, detail="Wybierz przynajmniej jedną mapę.")
     if runtime.train_thread is not None and runtime.train_thread.is_alive():
         raise HTTPException(status_code=409, detail="Trening już trwa.")
 
@@ -470,9 +488,21 @@ async def game_ws(websocket: WebSocket):
             env.close()
 
 
+@app.middleware("http")
+async def disable_browser_cache(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    return FileResponse(
+        os.path.join(STATIC_DIR, "index.html"),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

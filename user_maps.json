@@ -1,106 +1,135 @@
 {
   "map_1": {
     "start_pos": [
-      90.0,
-      300.0,
-      0.0
+      120.0,
+      290.0,
+      -4.440892098500626e-16
     ],
     "target_spot": {
-      "x": 390,
-      "y": 40,
+      "x": 310,
+      "y": 100,
       "orientation": "vertical"
     },
     "occupied_spots": [
       {
-        "x": 310,
-        "y": 40,
+        "x": 490,
+        "y": 100,
         "orientation": "vertical"
       },
       {
-        "x": 460,
-        "y": 40,
-        "orientation": "vertical"
-      },
-      {
-        "x": 310,
-        "y": 140,
-        "orientation": "vertical"
-      },
-      {
-        "x": 460,
-        "y": 140,
+        "x": 420,
+        "y": 100,
         "orientation": "vertical"
       }
     ],
-    "max_v": 90.0,
-    "car_size": 1.0,
-    "spot_size": 1.0,
-    "obstacle_size": 1.0
+    "max_v": 98.0,
+    "car_w": 30,
+    "car_h": 76,
+    "spot_w": 44,
+    "spot_h": 88,
+    "obstacle_w": 44,
+    "obstacle_h": 88
   },
-  "map_3": {
+  "map_2": {
     "start_pos": [
-      180.0,
-      490.0,
-      -1.570796326794897
+      80.0,
+      450.0,
+      0.0
     ],
     "target_spot": {
-      "x": 440,
+      "x": 360,
       "y": 50,
       "orientation": "vertical"
     },
     "occupied_spots": [
       {
-        "x": 370,
+        "x": 290,
         "y": 50,
         "orientation": "vertical"
       },
       {
-        "x": 300,
+        "x": 290,
+        "y": 160,
+        "orientation": "vertical"
+      },
+      {
+        "x": 290,
+        "y": 270,
+        "orientation": "vertical"
+      },
+      {
+        "x": 450,
         "y": 50,
         "orientation": "vertical"
       },
       {
-        "x": 530,
-        "y": 50,
+        "x": 450,
+        "y": 160,
         "orientation": "vertical"
       },
       {
-        "x": 370,
-        "y": 150,
-        "orientation": "vertical"
-      }
-    ],
-    "max_v": 60.0,
-    "car_size": 1.0,
-    "spot_size": 1.0,
-    "obstacle_size": 1.0
-  },
-  "map_5": {
-    "start_pos": [
-      90.0,
-      300.0,
-      0.0
-    ],
-    "target_spot": {
-      "x": 410,
-      "y": 30,
-      "orientation": "vertical"
-    },
-    "occupied_spots": [
-      {
-        "x": 340,
-        "y": 30,
+        "x": 450,
+        "y": 270,
         "orientation": "vertical"
       },
       {
-        "x": 480,
-        "y": 30,
+        "x": 450,
+        "y": 380,
+        "orientation": "vertical"
+      },
+      {
+        "x": 450,
+        "y": 490,
         "orientation": "vertical"
       }
     ],
     "max_v": 90.0,
-    "car_size": 1.0,
-    "spot_size": 1.0,
-    "obstacle_size": 1.0
+    "car_w": 24,
+    "car_h": 60,
+    "spot_w": 44,
+    "spot_h": 88,
+    "obstacle_w": 44,
+    "obstacle_h": 88
+  },
+  "map_3": {
+    "start_pos": [
+      490.0,
+      340.0,
+      3.141592653589793
+    ],
+    "target_spot": {
+      "x": 40,
+      "y": 170,
+      "orientation": "vertical"
+    },
+    "occupied_spots": [
+      {
+        "x": 40,
+        "y": 60,
+        "orientation": "vertical"
+      },
+      {
+        "x": 40,
+        "y": 270,
+        "orientation": "vertical"
+      },
+      {
+        "x": 40,
+        "y": 370,
+        "orientation": "vertical"
+      },
+      {
+        "x": 40,
+        "y": 470,
+        "orientation": "vertical"
+      }
+    ],
+    "max_v": 90.0,
+    "car_w": 24,
+    "car_h": 60,
+    "spot_w": 44,
+    "spot_h": 88,
+    "obstacle_w": 44,
+    "obstacle_h": 88
   }
 }

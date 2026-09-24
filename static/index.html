@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/style.css?v=14" />
 </head>
 <body data-view="MAIN">
   <div class="ambient" aria-hidden="true">
@@ -56,7 +56,11 @@
       </header>
       <div class="editor-layout">
         <div class="canvas-frame">
-          <canvas id="editor-canvas" width="600" height="600"></canvas>
+          <div class="map-measure">
+            <canvas id="editor-canvas" width="600" height="600"></canvas>
+            <span class="map-size map-size-y">34 m</span>
+            <span class="map-size map-size-x">34 m</span>
+          </div>
         </div>
         <aside class="editor-side">
           <div class="panel">
@@ -72,22 +76,34 @@
           <div class="panel">
             <h2>Parametry mapy</h2>
             <div class="editor-params">
-              <label class="param">
-                <span class="param-head"><span>v_max auta</span><span id="val-vmax">90</span></span>
-                <input type="range" id="param-vmax" min="40" max="140" step="5" value="90" />
-              </label>
-              <label class="param">
-                <span class="param-head"><span>Rozmiar auta</span><span id="val-car">100%</span></span>
-                <input type="range" id="param-car" min="70" max="140" step="5" value="100" />
-              </label>
-              <label class="param">
-                <span class="param-head"><span>Miejsce parkingowe</span><span id="val-spot">100%</span></span>
-                <input type="range" id="param-spot" min="70" max="140" step="5" value="100" />
-              </label>
-              <label class="param">
-                <span class="param-head"><span>Przeszkody</span><span id="val-obstacle">100%</span></span>
-                <input type="range" id="param-obstacle" min="70" max="140" step="5" value="100" />
-              </label>
+              <div class="param">
+                <span class="param-head"><span>Maksymalna prędkość</span></span>
+                <div class="speed-row">
+                  <input type="range" id="param-vmax" min="5" max="20" step="0.5" value="18.4" />
+                  <span id="val-vmax" class="speed-readout"><span>18,4 km/h</span><span>(5,1 m/s)</span></span>
+                </div>
+              </div>
+              <div class="param">
+                <span class="param-head"><span>Auto</span></span>
+                <div class="dim-row">
+                  <label>Szerokość <span class="stepper"><input type="text" inputmode="decimal" id="param-car-w" value="1,36" /><span class="stepper-btns"><button type="button" data-step="1" data-for="param-car-w" data-key="car_w" aria-label="Zwiększ">▲</button><button type="button" data-step="-1" data-for="param-car-w" data-key="car_w" aria-label="Zmniejsz">▼</button></span></span><span class="unit">m</span></label>
+                  <label>Długość <span class="stepper"><input type="text" inputmode="decimal" id="param-car-h" value="3,41" /><span class="stepper-btns"><button type="button" data-step="1" data-for="param-car-h" data-key="car_h" aria-label="Zwiększ">▲</button><button type="button" data-step="-1" data-for="param-car-h" data-key="car_h" aria-label="Zmniejsz">▼</button></span></span><span class="unit">m</span></label>
+                </div>
+              </div>
+              <div class="param">
+                <span class="param-head"><span>Docelowe miejsce parkingowe</span></span>
+                <div class="dim-row">
+                  <label>Szerokość <span class="stepper"><input type="text" inputmode="decimal" id="param-spot-w" value="2,50" /><span class="stepper-btns"><button type="button" data-step="1" data-for="param-spot-w" data-key="spot_w" aria-label="Zwiększ">▲</button><button type="button" data-step="-1" data-for="param-spot-w" data-key="spot_w" aria-label="Zmniejsz">▼</button></span></span><span class="unit">m</span></label>
+                  <label>Długość <span class="stepper"><input type="text" inputmode="decimal" id="param-spot-h" value="5,00" /><span class="stepper-btns"><button type="button" data-step="1" data-for="param-spot-h" data-key="spot_h" aria-label="Zwiększ">▲</button><button type="button" data-step="-1" data-for="param-spot-h" data-key="spot_h" aria-label="Zmniejsz">▼</button></span></span><span class="unit">m</span></label>
+                </div>
+              </div>
+              <div class="param">
+                <span class="param-head"><span>Zajęte miejsca</span></span>
+                <div class="dim-row">
+                  <label>Szerokość <span class="stepper"><input type="text" inputmode="decimal" id="param-obstacle-w" value="2,50" /><span class="stepper-btns"><button type="button" data-step="1" data-for="param-obstacle-w" data-key="obstacle_w" aria-label="Zwiększ">▲</button><button type="button" data-step="-1" data-for="param-obstacle-w" data-key="obstacle_w" aria-label="Zmniejsz">▼</button></span></span><span class="unit">m</span></label>
+                  <label>Długość <span class="stepper"><input type="text" inputmode="decimal" id="param-obstacle-h" value="5,00" /><span class="stepper-btns"><button type="button" data-step="1" data-for="param-obstacle-h" data-key="obstacle_h" aria-label="Zwiększ">▲</button><button type="button" data-step="-1" data-for="param-obstacle-h" data-key="obstacle_h" aria-label="Zmniejsz">▼</button></span></span><span class="unit">m</span></label>
+                </div>
+              </div>
             </div>
           </div>
           <p class="hint">LPM stawia i przesuwa · PPM usuwa zajęte</p>
@@ -96,11 +112,25 @@
       </div>
     </section>
 
+    <section id="view-train-maps" class="view hidden" hidden>
+      <header class="page-head">
+        <div>
+          <span class="eyebrow">Uczenie</span>
+          <h1>Wybierz mapy</h1>
+        </div>
+        <button class="btn" id="train-maps-back">Wstecz</button>
+      </header>
+      <p class="muted preview-hint">Kliknij mapy, które mają wejść do treningu.</p>
+      <div class="preview-grid train-map-grid" id="train-map-grid"></div>
+      <p class="status warn" id="train-maps-status"></p>
+      <button class="btn ok" id="train-maps-confirm">Zatwierdź</button>
+    </section>
+
     <section id="view-train-setup" class="view hidden" hidden>
       <header class="page-head">
         <div>
           <span class="eyebrow">Uczenie</span>
-          <h1>Ustaw trening</h1>
+          <h1>Kroki uczenia</h1>
         </div>
         <button class="btn" id="train-setup-back">Wstecz</button>
       </header>
@@ -162,7 +192,11 @@
         <button class="btn" id="game-back">Powrót</button>
       </header>
       <div class="canvas-frame game-frame">
-        <canvas id="game-canvas" width="600" height="600"></canvas>
+        <div class="map-measure">
+          <canvas id="game-canvas" width="600" height="600"></canvas>
+          <span class="map-size map-size-y">34 m</span>
+          <span class="map-size map-size-x">34 m</span>
+        </div>
       </div>
       <p class="game-banner" id="game-banner"></p>
       <p class="hint game-keys"><kbd>Esc</kbd> Powrót · <kbd>R</kbd> reset · <kbd>L</kbd> lidar</p>
@@ -179,8 +213,8 @@
     </div>
   </div>
 
-  <script src="/static/js/render.js"></script>
-  <script src="/static/js/editor.js"></script>
-  <script src="/static/js/app.js"></script>
+  <script src="/static/js/render.js?v=14"></script>
+  <script src="/static/js/editor.js?v=14"></script>
+  <script src="/static/js/app.js?v=14"></script>
 </body>
 </html>

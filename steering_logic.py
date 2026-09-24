@@ -78,10 +78,10 @@ class SteeringParkingEnv:
         self.height = 600
 
         # Konfiguracja wymiarów (piksele) — nadpisywana parametrami mapy
-        self.spot_w, self.spot_h = 50, 88
-        self.obstacle_w, self.obstacle_h = 50, 88
-        self.car_w, self.car_h = 25, 60
-        self.obstacle_car_w, self.obstacle_car_h = 25, 60
+        self.spot_w, self.spot_h = 44, 88
+        self.obstacle_w, self.obstacle_h = 44, 88
+        self.car_w, self.car_h = 24, 60
+        self.obstacle_car_w, self.obstacle_car_h = 24, 60
         self.wheelbase = 40.0
         self.rear = 10.0
         self.obstacle_wheelbase = 40.0

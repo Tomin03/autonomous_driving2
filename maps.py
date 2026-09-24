@@ -6,13 +6,26 @@ import os
 from items import Car, ParkingSpot
 
 STORE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_maps.json")
-SPOT_W, SPOT_H = 50, 88
-CAR_W, CAR_H = 25, 60
-REAR = 10.0
-WHEELBASE = 40.0
+# 24×60 = 1,8:4,5; 44×88 = 1:2. Rozstaw osi i zwis tylny to ułamek długości.
+SPOT_W, SPOT_H = 44, 88
+CAR_W, CAR_H = 24, 60
+REAR_RATIO = 10.0 / 60.0
+WHEELBASE_RATIO = 40.0 / 60.0
+REAR = CAR_H * REAR_RATIO
+WHEELBASE = CAR_H * WHEELBASE_RATIO
+PX_PER_M = 17.6
 DEFAULT_MAX_V = 90.0
-MAX_V_MIN, MAX_V_MAX = 40.0, 140.0
-SIZE_MIN, SIZE_MAX = 0.70, 1.40
+MAX_V_KMH_MIN, MAX_V_KMH_MAX = 5.0, 20.0
+MAX_V_MIN = MAX_V_KMH_MIN * PX_PER_M / 3.6
+MAX_V_MAX = MAX_V_KMH_MAX * PX_PER_M / 3.6
+DIM_LIMITS = {
+    "car_w": (14, 48),
+    "car_h": (36, 96),
+    "spot_w": (28, 90),
+    "spot_h": (56, 180),
+    "obstacle_w": (28, 90),
+    "obstacle_h": (56, 180),
+}
 
 MAPS = {
     "map_1": {
@@ -180,34 +193,48 @@ def _as_float(value, default):
         return float(default)
 
 
+def _clamp_dim(key, value):
+    lo, hi = DIM_LIMITS[key]
+    return int(round(min(hi, max(lo, value))))
+
+
+def _dim_from(data, key, default, legacy_scale_key, legacy_base):
+    if data.get(key) is not None:
+        return _clamp_dim(key, _as_float(data.get(key), default))
+    if data.get(legacy_scale_key) is not None:
+        return _clamp_dim(key, legacy_base * _as_float(data.get(legacy_scale_key), 1.0))
+    return _clamp_dim(key, default)
+
+
 def map_dims(data):
-    # do parametrow i ich limitow na suwakach
-    car_size = round(min(SIZE_MAX, max(SIZE_MIN, _as_float(data.get("car_size", 1.0), 1.0))), 2)
-    spot_size = round(min(SIZE_MAX, max(SIZE_MIN, _as_float(data.get("spot_size", 1.0), 1.0))), 2)
-    obstacle_size = round(
-        min(SIZE_MAX, max(SIZE_MIN, _as_float(data.get("obstacle_size", 1.0), 1.0))), 2
-    )
+    data = data or {}
+    car_w = _dim_from(data, "car_w", CAR_W, "car_size", CAR_W)
+    car_h = _dim_from(data, "car_h", CAR_H, "car_size", CAR_H)
+    spot_w = _dim_from(data, "spot_w", SPOT_W, "spot_size", SPOT_W)
+    spot_h = _dim_from(data, "spot_h", SPOT_H, "spot_size", SPOT_H)
+    obstacle_w = _dim_from(data, "obstacle_w", SPOT_W, "obstacle_size", SPOT_W)
+    obstacle_h = _dim_from(data, "obstacle_h", SPOT_H, "obstacle_size", SPOT_H)
+    # Zaparkowane auto zachowuje proporcję 1,8:4,5 i skaluje się z zajętym miejscem.
+    obstacle_car_w = max(8, int(round(CAR_W * obstacle_w / SPOT_W)))
+    obstacle_car_h = max(12, int(round(CAR_H * obstacle_h / SPOT_H)))
     max_v = round(
         min(MAX_V_MAX, max(MAX_V_MIN, _as_float(data.get("max_v", DEFAULT_MAX_V), DEFAULT_MAX_V))),
         1,
     )
     return {
         "max_v": max_v,
-        "car_size": car_size,
-        "spot_size": spot_size,
-        "obstacle_size": obstacle_size,
-        "car_w": int(round(CAR_W * car_size)),
-        "car_h": int(round(CAR_H * car_size)),
-        "spot_w": int(round(SPOT_W * spot_size)),
-        "spot_h": int(round(SPOT_H * spot_size)),
-        "obstacle_w": int(round(SPOT_W * obstacle_size)),
-        "obstacle_h": int(round(SPOT_H * obstacle_size)),
-        "obstacle_car_w": int(round(CAR_W * obstacle_size)),
-        "obstacle_car_h": int(round(CAR_H * obstacle_size)),
-        "wheelbase": WHEELBASE * car_size,
-        "rear": REAR * car_size,
-        "obstacle_wheelbase": WHEELBASE * obstacle_size,
-        "obstacle_rear": REAR * obstacle_size,
+        "car_w": car_w,
+        "car_h": car_h,
+        "spot_w": spot_w,
+        "spot_h": spot_h,
+        "obstacle_w": obstacle_w,
+        "obstacle_h": obstacle_h,
+        "obstacle_car_w": obstacle_car_w,
+        "obstacle_car_h": obstacle_car_h,
+        "wheelbase": car_h * WHEELBASE_RATIO,
+        "rear": car_h * REAR_RATIO,
+        "obstacle_wheelbase": obstacle_car_h * WHEELBASE_RATIO,
+        "obstacle_rear": obstacle_car_h * REAR_RATIO,
     }
 
 # Ustawienia mapy
@@ -230,9 +257,12 @@ def _normalize_map(data):
             for s in data.get("occupied_spots", [])
         ],
         "max_v": dims["max_v"],
-        "car_size": dims["car_size"],
-        "spot_size": dims["spot_size"],
-        "obstacle_size": dims["obstacle_size"],
+        "car_w": dims["car_w"],
+        "car_h": dims["car_h"],
+        "spot_w": dims["spot_w"],
+        "spot_h": dims["spot_h"],
+        "obstacle_w": dims["obstacle_w"],
+        "obstacle_h": dims["obstacle_h"],
     }
 
 # jsonowanie mapki
@@ -243,9 +273,12 @@ def _serialize_map(data):
         "target_spot": n["target_spot"],
         "occupied_spots": n["occupied_spots"],
         "max_v": n["max_v"],
-        "car_size": n["car_size"],
-        "spot_size": n["spot_size"],
-        "obstacle_size": n["obstacle_size"],
+        "car_w": n["car_w"],
+        "car_h": n["car_h"],
+        "spot_w": n["spot_w"],
+        "spot_h": n["spot_h"],
+        "obstacle_w": n["obstacle_w"],
+        "obstacle_h": n["obstacle_h"],
     }
 
 #Ładowanie mapy
@@ -342,9 +375,12 @@ def default_new_map():
         "target_spot": {"x": 400, "y": 250, "orientation": "vertical"},
         "occupied_spots": [],
         "max_v": DEFAULT_MAX_V,
-        "car_size": 1.0,
-        "spot_size": 1.0,
-        "obstacle_size": 1.0,
+        "car_w": CAR_W,
+        "car_h": CAR_H,
+        "spot_w": SPOT_W,
+        "spot_h": SPOT_H,
+        "obstacle_w": SPOT_W,
+        "obstacle_h": SPOT_H,
     }
 
 

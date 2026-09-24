@@ -18,18 +18,27 @@ const COLORS = {
 };
 
 let CFG = {
+  px_per_m: 17.6,
   board: 600,
   snap: 10,
-  spot_w: 50,
+  spot_w: 44,
   spot_h: 88,
-  car_w: 25,
+  car_w: 24,
   car_h: 60,
   rear: 10,
   max_v: 90,
-  max_v_min: 40,
-  max_v_max: 140,
-  size_min: 0.7,
-  size_max: 1.4,
+  max_v_min: 24.4,
+  max_v_max: 97.8,
+  max_v_kmh_min: 5,
+  max_v_kmh_max: 20,
+  dim_limits: {
+    car_w: [14, 48],
+    car_h: [36, 96],
+    spot_w: [28, 90],
+    spot_h: [56, 180],
+    obstacle_w: [28, 90],
+    obstacle_h: [56, 180],
+  },
   train_steps_min: 1000,
   train_steps_max: 1_000_000,
   train_steps_default: 350_000,
@@ -39,21 +48,59 @@ function setConfig(cfg) {
   CFG = { ...CFG, ...cfg };
 }
 
+function pxToM(px) {
+  return Number(px) / (CFG.px_per_m || 17.6);
+}
+
+function parseM(value) {
+  const n = Number(String(value).trim().replace(",", "."));
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function mToPx(m) {
+  return Math.round(parseM(m) * (CFG.px_per_m || 17.6));
+}
+
+function formatM(px) {
+  return pxToM(px).toFixed(2).replace(".", ",");
+}
+
+function kmhToPx(kmh) {
+  return mToPx(parseM(kmh) / 3.6);
+}
+
+function pxToKmh(px) {
+  return pxToM(px) * 3.6;
+}
+
+function clampDim(key, value) {
+  const lim = CFG.dim_limits?.[key];
+  const n = Math.round(Number(value));
+  if (!lim || !Number.isFinite(n)) return Math.round(Number(CFG[key] ?? value) || 0);
+  return Math.max(lim[0], Math.min(lim[1], n));
+}
+
 function sizesOf(data) {
-  const car = Number(data?.car_size ?? 1);
-  const spot = Number(data?.spot_size ?? 1);
-  const obs = Number(data?.obstacle_size ?? 1);
+  const carW = clampDim("car_w", data?.car_w ?? CFG.car_w);
+  const carH = clampDim("car_h", data?.car_h ?? CFG.car_h);
+  const spotW = clampDim("spot_w", data?.spot_w ?? CFG.spot_w);
+  const spotH = clampDim("spot_h", data?.spot_h ?? CFG.spot_h);
+  const obsW = clampDim("obstacle_w", data?.obstacle_w ?? CFG.spot_w);
+  const obsH = clampDim("obstacle_h", data?.obstacle_h ?? CFG.spot_h);
+  const rearRatio = CFG.rear / CFG.car_h;
+  const obsCarW = Math.max(8, Math.round(CFG.car_w * obsW / CFG.spot_w));
+  const obsCarH = Math.max(12, Math.round(CFG.car_h * obsH / CFG.spot_h));
   return {
-    car_w: Math.round(CFG.car_w * car),
-    car_h: Math.round(CFG.car_h * car),
-    rear: CFG.rear * car,
-    spot_w: Math.round(CFG.spot_w * spot),
-    spot_h: Math.round(CFG.spot_h * spot),
-    obstacle_w: Math.round(CFG.spot_w * obs),
-    obstacle_h: Math.round(CFG.spot_h * obs),
-    obstacle_car_w: Math.round(CFG.car_w * obs),
-    obstacle_car_h: Math.round(CFG.car_h * obs),
-    obstacle_rear: CFG.rear * obs,
+    car_w: carW,
+    car_h: carH,
+    rear: carH * rearRatio,
+    spot_w: spotW,
+    spot_h: spotH,
+    obstacle_w: obsW,
+    obstacle_h: obsH,
+    obstacle_car_w: obsCarW,
+    obstacle_car_h: obsCarH,
+    obstacle_rear: obsCarH * rearRatio,
   };
 }
 
@@ -484,8 +531,8 @@ function drawGame(ctx, state) {
     ctx.font = "14px Consolas, monospace";
     const ctrl = hud.control ? `  ${hud.control}` : "";
     const lines = [
-      `v=${hud.v.toFixed(1).padStart(6)}  phi=${hud.phi_deg.toFixed(1).padStart(5)}deg`,
-      `lidar_min=${hud.lidar_min.toFixed(1).padStart(5)}  dist=${hud.dist.toFixed(1).padStart(5)}`,
+      `v=${pxToM(hud.v).toFixed(2).padStart(5)} m/s  phi=${hud.phi_deg.toFixed(1).padStart(5)}deg`,
+      `lidar=${pxToM(hud.lidar_min).toFixed(2).padStart(5)} m  dist=${pxToM(hud.dist).toFixed(2).padStart(5)} m`,
       `mapa=${state.map_name}  parked=${hud.parked}${ctrl}`,
     ];
     lines.forEach((line, i) => ctx.fillText(line, 12, 24 + i * 16));
