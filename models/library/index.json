@@ -1,0 +1,10 @@
+[
+  {
+    "id": "59c2b1c2e5f6488ea68ce9157c040133",
+    "name": "model1",
+    "file": "59c2b1c2e5f6488ea68ce9157c040133.pt",
+    "created": "2026-09-25T11:55:51",
+    "step": 2711,
+    "timesteps": 350000
+  }
+]

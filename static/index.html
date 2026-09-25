@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/style.css?v=14" />
+  <link rel="stylesheet" href="/static/css/style.css?v=19" />
 </head>
 <body data-view="MAIN">
   <div class="ambient" aria-hidden="true">
@@ -20,8 +20,9 @@
       <div class="hero">
         <h1>Autonomiczne Parkowanie</h1>
         <div class="hero-actions">
-          <button class="btn ok wide" id="btn-train">Trenuj model</button>
-          <button class="btn wide" id="btn-maps">Spis map</button>
+          <button class="btn wide" id="btn-train">Trenuj model</button>
+          <button class="btn ok wide" id="btn-maps">Spis map</button>
+          <button class="btn wide" id="btn-saved-models">Zapisane modele</button>
         </div>
         <p class="status warn" id="main-status"></p>
       </div>
@@ -155,7 +156,11 @@
           <span class="eyebrow">Uczenie</span>
           <h1>Trening SAC</h1>
         </div>
-        <button class="btn danger" id="train-stop">Przerwij</button>
+        <div class="topbar-actions">
+          <button class="btn ok hidden" id="train-save" hidden>Zapisz model</button>
+          <button class="btn hidden" id="train-menu" hidden>Menu</button>
+          <button class="btn danger" id="train-stop">Przerwij</button>
+        </div>
       </header>
       <div class="progress-wrap">
         <div class="progress-bar"><div class="progress-fill" id="train-progress"></div></div>
@@ -171,15 +176,27 @@
       <p class="status danger" id="train-error"></p>
     </section>
 
+    <section id="view-saved" class="view hidden" hidden>
+      <header class="page-head">
+        <div>
+          <span class="eyebrow">Biblioteka</span>
+          <h1>Zapisane modele</h1>
+        </div>
+        <button class="btn" id="saved-back">Wstecz</button>
+      </header>
+      <div class="model-list" id="saved-list"></div>
+      <p class="status warn" id="saved-status"></p>
+    </section>
+
     <section id="view-preview" class="view hidden" hidden>
       <header class="page-head">
         <div>
-          <span class="eyebrow">Gotowy model</span>
-          <h1>Podgląd agenta</h1>
+          <span class="eyebrow" id="preview-eyebrow">Gotowy model</span>
+          <h1 id="preview-title">Podgląd agenta</h1>
         </div>
         <button class="btn" id="preview-back">Menu</button>
       </header>
-      <p class="muted preview-hint">Wybierz mapę, żeby zobaczyć jak agent parkuje.</p>
+      <p class="muted preview-hint" id="preview-hint">Kliknij mapę, żeby zobaczyć jak agent parkuje.</p>
       <div class="preview-grid" id="preview-grid"></div>
     </section>
 
@@ -203,6 +220,18 @@
     </section>
   </main>
 
+  <div id="save-modal" class="modal hidden" hidden>
+    <div class="modal-box">
+      <p>Zapisz model</p>
+      <input id="save-model-name" class="name-input" maxlength="40" placeholder="Nazwa modelu" />
+      <p class="status warn" id="save-model-status"></p>
+      <div class="modal-actions">
+        <button class="btn ok" id="save-model-yes">Zapisz</button>
+        <button class="btn" id="save-model-no">Anuluj</button>
+      </div>
+    </div>
+  </div>
+
   <div id="modal" class="modal hidden" hidden>
     <div class="modal-box">
       <p id="modal-text">Usunąć mapę?</p>
@@ -213,8 +242,8 @@
     </div>
   </div>
 
-  <script src="/static/js/render.js?v=14"></script>
-  <script src="/static/js/editor.js?v=14"></script>
-  <script src="/static/js/app.js?v=14"></script>
+  <script src="/static/js/render.js?v=16"></script>
+  <script src="/static/js/editor.js?v=16"></script>
+  <script src="/static/js/app.js?v=17"></script>
 </body>
 </html>

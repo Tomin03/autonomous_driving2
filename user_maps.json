@@ -1,8 +1,8 @@
 {
   "map_1": {
     "start_pos": [
-      120.0,
-      290.0,
+      100.0,
+      330.0,
       -4.440892098500626e-16
     ],
     "target_spot": {
@@ -22,7 +22,7 @@
         "orientation": "vertical"
       }
     ],
-    "max_v": 98.0,
+    "max_v": 97.8,
     "car_w": 30,
     "car_h": 76,
     "spot_w": 44,

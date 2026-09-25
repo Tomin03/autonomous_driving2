@@ -130,10 +130,57 @@ h1 {
 }
 
 .hero-actions .btn.wide {
-  width: 100%;
   height: 70px;
   min-width: 0;
+  padding: 0 22px;
   font-size: 18px;
+}
+
+.hero-actions .btn.wide {
+  width: 100%;
+}
+
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
+}
+
+.model-row .label {
+  flex: 1;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.model-row .meta {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  margin-top: 4px;
+}
+
+.name-input {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  background: #fff;
+  color: var(--ink);
+  font: 700 22px/1.2 var(--font);
+  letter-spacing: -0.03em;
+  text-align: center;
+  border-radius: 16px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
 }
 
 .status {
@@ -273,6 +320,14 @@ h1 {
   padding: 12px 14px;
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(10px);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.map-row:hover {
+  transform: translateY(-2px);
+  border-color: rgba(124, 58, 237, 0.28);
+  box-shadow: var(--shadow);
 }
 
 .map-row canvas {

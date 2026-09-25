@@ -1,8 +1,13 @@
 import argparse
 import asyncio
+import json
 import os
+import re
+import shutil
 import threading
+import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -42,6 +47,9 @@ from steering_logic import (
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
+MODELS_DIR = os.path.join(BASE_DIR, "models")
+LIBRARY_DIR = os.path.join(MODELS_DIR, "library")
+LIBRARY_INDEX = os.path.join(LIBRARY_DIR, "index.json")
 BOARD = 600
 SNAP = 10
 TRAIN_STEPS_MIN = 1_000
@@ -118,12 +126,15 @@ class AppRuntime:
         self.train_stop: Optional[threading.Event] = None
         self.actor = None
         self.device = None
+        self.actor_path = None
         self.actor_lock = threading.Lock()
+        self.library_lock = threading.Lock()
 
     def invalidate_actor(self):
         with self.actor_lock:
             self.actor = None
             self.device = None
+            self.actor_path = None
 
 
 runtime = AppRuntime()
@@ -156,21 +167,115 @@ def model_path() -> Optional[str]:
     return next((p for p in AGENT_MODEL_PATHS["sac"] if os.path.isfile(p)), None)
 
 
-def load_actor(env: SteeringParkingEnv):
+def _read_library() -> list[dict]:
+    if not os.path.isfile(LIBRARY_INDEX):
+        return []
+    with open(LIBRARY_INDEX, encoding="utf-8") as handle:
+        data = json.load(handle)
+    return data if isinstance(data, list) else []
+
+
+def _write_library(items: list[dict]):
+    os.makedirs(LIBRARY_DIR, exist_ok=True)
+    with open(LIBRARY_INDEX, "w", encoding="utf-8") as handle:
+        json.dump(items, handle, ensure_ascii=False, indent=2)
+
+
+def library_items() -> list[dict]:
+    with runtime.library_lock:
+        items = []
+        for item in _read_library():
+            path = os.path.join(LIBRARY_DIR, item.get("file", ""))
+            if item.get("id") and os.path.isfile(path):
+                items.append(item)
+        return items
+
+
+def saved_model_path(model_id: str) -> Optional[str]:
+    if not re.fullmatch(r"[0-9a-f]{32}", model_id or ""):
+        return None
+    with runtime.library_lock:
+        for item in _read_library():
+            if item.get("id") == model_id:
+                path = os.path.join(LIBRARY_DIR, item.get("file", ""))
+                return path if os.path.isfile(path) else None
+    return None
+
+
+def save_named_model(name: str) -> dict:
+    clean = re.sub(r"\s+", " ", (name or "").strip())
+    if not clean:
+        raise ValueError("Podaj nazwę modelu.")
+    if len(clean) > 40:
+        raise ValueError("Nazwa może mieć najwyżej 40 znaków.")
+    source = os.path.join(MODELS_DIR, "sac_parking.pt")
+    if not os.path.isfile(source):
+        raise FileNotFoundError("Brak modelu do zapisania. Przerwij trening i spróbuj ponownie.")
+    model_id = uuid.uuid4().hex
+    filename = f"{model_id}.pt"
+    with runtime.library_lock:
+        items = _read_library()
+        folded = clean.casefold()
+        if any(str(item.get("name", "")).casefold() == folded for item in items):
+            raise ValueError("Model o tej nazwie już istnieje.")
+        os.makedirs(LIBRARY_DIR, exist_ok=True)
+        shutil.copy2(source, os.path.join(LIBRARY_DIR, filename))
+        snap = runtime.train_monitor.snapshot() if runtime.train_monitor else {}
+        item = {
+            "id": model_id,
+            "name": clean,
+            "file": filename,
+            "created": datetime.now().isoformat(timespec="seconds"),
+            "step": int(snap.get("step") or 0),
+            "timesteps": int(snap.get("timesteps") or 0),
+        }
+        items.append(item)
+        _write_library(items)
+        return item
+
+
+def delete_named_model(model_id: str) -> bool:
+    if not re.fullmatch(r"[0-9a-f]{32}", model_id or ""):
+        return False
+    with runtime.library_lock:
+        items = _read_library()
+        kept = []
+        removed = None
+        for item in items:
+            if item.get("id") == model_id:
+                removed = item
+            else:
+                kept.append(item)
+        if removed is None:
+            return False
+        path = os.path.join(LIBRARY_DIR, removed.get("file", ""))
+        if os.path.isfile(path):
+            os.remove(path)
+        _write_library(kept)
+    if runtime.actor_path and os.path.abspath(runtime.actor_path) == os.path.abspath(
+        os.path.join(LIBRARY_DIR, removed.get("file", ""))
+    ):
+        runtime.invalidate_actor()
+    return True
+
+
+def load_actor(env: SteeringParkingEnv, path: Optional[str] = None):
     import torch
 
     with runtime.actor_lock:
-        if runtime.actor is not None:
-            return runtime.actor, runtime.device
-        path = model_path()
-        if path is None:
+        chosen = path or model_path()
+        if chosen is None or not os.path.isfile(chosen):
             raise FileNotFoundError("Brak modelu. Najpierw uruchom trening.")
+        chosen = os.path.abspath(chosen)
+        if runtime.actor is not None and runtime.actor_path == chosen:
+            return runtime.actor, runtime.device
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         actor, _, _ = _load_policy_actor(
-            path, env.obs_dim, env.act_dim, device, algo_hint="sac"
+            chosen, env.obs_dim, env.act_dim, device, algo_hint="sac"
         )
         runtime.actor = actor
         runtime.device = device
+        runtime.actor_path = chosen
         return actor, device
 
 
@@ -207,6 +312,10 @@ class MapsBulkPayload(BaseModel):
 class TrainStartPayload(BaseModel):
     timesteps: int = TRAIN_STEPS_DEFAULT
     maps: Optional[list[str]] = None
+
+
+class SaveModelPayload(BaseModel):
+    name: str
 
 
 @asynccontextmanager
@@ -306,6 +415,32 @@ def api_delete_map(name: str):
 def api_model():
     path = model_path()
     return {"available": path is not None, "path": path}
+
+
+@app.get("/api/models")
+def api_list_models():
+    return {"models": library_items()}
+
+
+@app.post("/api/models")
+def api_save_model(payload: SaveModelPayload):
+    snap = runtime.train_monitor.snapshot() if runtime.train_monitor else None
+    if snap is None or not snap.get("done") or not snap.get("stopped"):
+        raise HTTPException(status_code=409, detail="Model można zapisać po przerwaniu treningu.")
+    try:
+        item = save_named_model(payload.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return item
+
+
+@app.delete("/api/models/{model_id}")
+def api_delete_model(model_id: str):
+    if not delete_named_model(model_id):
+        raise HTTPException(status_code=404, detail="Nieznany model.")
+    return {"ok": True}
 
 
 @app.get("/api/train/status")
@@ -438,12 +573,22 @@ async def game_ws(websocket: WebSocket):
                     continue
                 if map_name not in names:
                     map_name = names[0]
+                model_id = msg.get("model_id")
+                if model_id:
+                    chosen = saved_model_path(str(model_id))
+                    if chosen is None:
+                        await websocket.send_json({"error": "Nie znaleziono zapisanego modelu."})
+                        continue
+                else:
+                    chosen = model_path()
                 if env is None:
                     env = SteeringParkingEnv(map_name=map_name)
                 else:
                     env.set_map(map_name)
                 try:
-                    actor, device = await executor_loop.run_in_executor(None, load_actor, env)
+                    actor, device = await executor_loop.run_in_executor(
+                        None, lambda: load_actor(env, chosen)
+                    )
                 except Exception as exc:
                     await websocket.send_json({"error": str(exc)})
                     continue

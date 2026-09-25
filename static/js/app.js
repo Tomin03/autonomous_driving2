@@ -5,6 +5,7 @@ const views = {
   TRAIN_MAPS: document.getElementById("view-train-maps"),
   TRAIN_SETUP: document.getElementById("view-train-setup"),
   TRAINING: document.getElementById("view-training"),
+  SAVED: document.getElementById("view-saved"),
   PREVIEW: document.getElementById("view-preview"),
   GAME: document.getElementById("view-game"),
 };
@@ -15,6 +16,9 @@ const previewGrid = document.getElementById("preview-grid");
 const modal = document.getElementById("modal");
 const modalText = document.getElementById("modal-text");
 const trainStopBtn = document.getElementById("train-stop");
+const trainSaveBtn = document.getElementById("train-save");
+const trainMenuBtn = document.getElementById("train-menu");
+const saveModal = document.getElementById("save-modal");
 const trainProgress = document.getElementById("train-progress");
 const trainProgressLabel = document.getElementById("train-progress-label");
 const trainStats = document.getElementById("train-stats");
@@ -32,6 +36,10 @@ let currentView = "MAIN";
 let mapsDraft = [];
 let trainMaps = [];
 let trainMapSelection = null;
+let trainStopping = false;
+let savedModels = [];
+let activeModelId = null;
+let previewOrigin = "train";
 
 function cloneMap(item) {
   return {
@@ -238,6 +246,7 @@ function renderMapList() {
   mapsDraft.forEach((item) => {
     const row = document.createElement("div");
     row.className = "map-row";
+    row.onclick = () => openEditor(item.name, item.data);
     const canvas = document.createElement("canvas");
     canvas.width = 72;
     canvas.height = 72;
@@ -250,11 +259,15 @@ function renderMapList() {
     const edit = document.createElement("button");
     edit.className = "btn";
     edit.textContent = "Edytuj";
-    edit.onclick = () => openEditor(item.name, item.data);
+    edit.onclick = (event) => {
+      event.stopPropagation();
+      openEditor(item.name, item.data);
+    };
     const del = document.createElement("button");
     del.className = "btn danger";
     del.textContent = "Usuń";
-    del.onclick = () => {
+    del.onclick = (event) => {
+      event.stopPropagation();
       pendingDelete = item.name;
       modalText.textContent = `Usunąć ${item.label}?`;
       modal.classList.remove("hidden");
@@ -278,6 +291,16 @@ async function saveMapsDraft() {
       maps: mapsDraft.map((item) => ({ name: item.name, data: item.data })),
     }),
   });
+}
+
+function setPreviewHeading(modelName) {
+  const saved = Boolean(modelName);
+  document.getElementById("preview-eyebrow").textContent = saved ? "Podgląd" : "Gotowy model";
+  document.getElementById("preview-title").textContent = saved ? modelName : "Podgląd agenta";
+  document.getElementById("preview-hint").textContent = saved
+    ? "Kliknij mapę, żeby zobaczyć jak ten model parkuje."
+    : "Kliknij mapę, żeby zobaczyć jak agent parkuje.";
+  document.getElementById("preview-back").textContent = saved ? "Wstecz" : "Menu";
 }
 
 async function renderPreview() {
@@ -336,11 +359,13 @@ function closeWs() {
 }
 
 async function startGame(mapName, label) {
-  const model = await api("/api/model");
-  if (!model.available) {
-    mainStatus.textContent = "Brak modelu. Najpierw uruchom trening.";
-    show("MAIN");
-    return;
+  if (!activeModelId) {
+    const model = await api("/api/model");
+    if (!model.available) {
+      mainStatus.textContent = "Brak modelu. Najpierw uruchom trening.";
+      show("MAIN");
+      return;
+    }
   }
   closeWs();
   gameBanner.textContent = "";
@@ -350,7 +375,11 @@ async function startGame(mapName, label) {
 
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws/game`);
-  ws.onopen = () => ws.send(JSON.stringify({ type: "start", map_name: mapName }));
+  ws.onopen = () => ws.send(JSON.stringify({
+    type: "start",
+    map_name: mapName,
+    model_id: activeModelId,
+  }));
   ws.onmessage = (ev) => {
     const state = JSON.parse(ev.data);
     if (state.error) {
@@ -417,9 +446,19 @@ function renderTrain(snap) {
   trainError.textContent = snap.error ? `Błąd: ${String(snap.error).slice(0, 80)}` : "";
 
   const done = Boolean(snap.done);
-  trainStopBtn.textContent = done ? "Zobacz agenta" : "Przerwij";
-  trainStopBtn.classList.toggle("ok", done);
-  trainStopBtn.classList.toggle("danger", !done);
+  const interrupted = done && Boolean(snap.stopped);
+  trainSaveBtn.classList.toggle("hidden", !interrupted);
+  trainSaveBtn.hidden = !interrupted;
+  trainMenuBtn.classList.toggle("hidden", !interrupted);
+  trainMenuBtn.hidden = !interrupted;
+  trainStopBtn.classList.toggle("hidden", interrupted);
+  trainStopBtn.hidden = interrupted;
+  if (!interrupted) {
+    trainStopBtn.textContent = done ? "Zobacz agenta" : (trainStopping ? "Przerywanie…" : "Przerwij");
+    trainStopBtn.disabled = trainStopping && !done;
+    trainStopBtn.classList.toggle("ok", done);
+    trainStopBtn.classList.toggle("danger", !done);
+  }
 }
 
 function stopTrainPoll() {
@@ -432,8 +471,11 @@ function stopTrainPoll() {
 async function pollTrain() {
   const snap = await api("/api/train/status");
   renderTrain(snap);
-  if (snap.done && !snap.error) {
+  if (snap.done && !snap.error && !snap.stopped) {
     stopTrainPoll();
+    activeModelId = null;
+    previewOrigin = "train";
+    setPreviewHeading(null);
     await renderPreview();
     show("PREVIEW");
   }
@@ -483,6 +525,7 @@ async function startTraining() {
     });
     if (setupStatus) setupStatus.textContent = "";
     mainStatus.textContent = "";
+    trainStopping = false;
     show("TRAINING");
     renderTrain(await api("/api/train/status"));
     stopTrainPoll();
@@ -552,6 +595,96 @@ function openTrainSteps() {
   show("TRAIN_SETUP");
 }
 
+function leavePreview() {
+  closeWs();
+  if (previewOrigin === "saved") show("SAVED");
+  else show("MAIN");
+}
+
+function formatSavedWhen(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("pl-PL", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function renderSavedList() {
+  const list = document.getElementById("saved-list");
+  const status = document.getElementById("saved-status");
+  list.innerHTML = "";
+  if (!savedModels.length) {
+    status.textContent = "Brak zapisanych modeli. Przerwij trening i zapisz model.";
+    return;
+  }
+  status.textContent = "";
+  savedModels.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "model-row";
+    const label = document.createElement("div");
+    label.className = "label";
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const when = formatSavedWhen(item.created);
+    const steps = Number(item.step || 0).toLocaleString("pl-PL");
+    meta.textContent = when ? `${when} · krok ${steps}` : `krok ${steps}`;
+    label.append(document.createTextNode(item.name), meta);
+    const open = document.createElement("button");
+    open.className = "btn ok";
+    open.textContent = "Podgląd";
+    open.onclick = () => openSavedPreview(item);
+    const del = document.createElement("button");
+    del.className = "btn danger";
+    del.textContent = "Usuń";
+    del.onclick = async () => {
+      try {
+        await api(`/api/models/${item.id}`, { method: "DELETE" });
+        savedModels = savedModels.filter((model) => model.id !== item.id);
+        renderSavedList();
+      } catch (err) {
+        status.textContent = err.message;
+      }
+    };
+    row.append(label, open, del);
+    list.appendChild(row);
+  });
+}
+
+async function openSavedModels() {
+  mainStatus.textContent = "";
+  const data = await api("/api/models");
+  savedModels = data.models || [];
+  renderSavedList();
+  show("SAVED");
+}
+
+async function openSavedPreview(model) {
+  activeModelId = model.id;
+  previewOrigin = "saved";
+  setPreviewHeading(model.name);
+  await renderPreview();
+  show("PREVIEW");
+}
+
+function openSaveModal() {
+  const input = document.getElementById("save-model-name");
+  const status = document.getElementById("save-model-status");
+  input.value = "";
+  status.textContent = "";
+  saveModal.classList.remove("hidden");
+  saveModal.hidden = false;
+  input.focus();
+}
+
+function closeSaveModal() {
+  saveModal.classList.add("hidden");
+  saveModal.hidden = true;
+}
+
 document.getElementById("game-back").onclick = () => {
   closeWs();
   renderPreview().then(() => show("PREVIEW"));
@@ -563,6 +696,8 @@ document.getElementById("btn-maps").onclick = async () => {
   show("MAP_LIST");
 };
 document.getElementById("btn-train").onclick = openTrainSetup;
+document.getElementById("btn-saved-models").onclick = openSavedModels;
+document.getElementById("saved-back").onclick = () => show("MAIN");
 document.getElementById("train-maps-back").onclick = () => show("MAIN");
 document.getElementById("train-maps-confirm").onclick = openTrainSteps;
 document.getElementById("train-setup-back").onclick = () => show("TRAIN_MAPS");
@@ -599,10 +734,7 @@ document.getElementById("maps-new").onclick = () => {
   const name = nextDraftName();
   openEditor(name, defaultNewMap());
 };
-document.getElementById("preview-back").onclick = () => {
-  closeWs();
-  show("MAIN");
-};
+document.getElementById("preview-back").onclick = leavePreview;
 document.getElementById("editor-save").onclick = () => {
   upsertDraft(editor.name, editor.data);
   renderMapList();
@@ -721,15 +853,53 @@ document.getElementById("train-stop").onclick = async () => {
   const snap = await api("/api/train/status");
   if (snap.done) {
     stopTrainPoll();
+    activeModelId = null;
+    previewOrigin = "train";
+    setPreviewHeading(null);
     await renderPreview();
     show("PREVIEW");
   } else {
+    trainStopping = true;
+    trainStopBtn.textContent = "Przerywanie…";
+    trainStopBtn.disabled = true;
     await api("/api/train/stop", { method: "POST" });
   }
 };
+trainSaveBtn.onclick = openSaveModal;
+trainMenuBtn.onclick = () => {
+  stopTrainPoll();
+  trainStopping = false;
+  show("MAIN");
+};
+document.getElementById("save-model-no").onclick = closeSaveModal;
+document.getElementById("save-model-yes").onclick = async () => {
+  const input = document.getElementById("save-model-name");
+  const status = document.getElementById("save-model-status");
+  status.textContent = "";
+  try {
+    const saved = await api("/api/models", {
+      method: "POST",
+      body: JSON.stringify({ name: input.value }),
+    });
+    closeSaveModal();
+    stopTrainPoll();
+    trainStopping = false;
+    mainStatus.textContent = `Zapisano model „${saved.name}”.`;
+    show("MAIN");
+  } catch (err) {
+    status.textContent = err.message;
+  }
+};
+document.getElementById("save-model-name").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("save-model-yes").click();
+});
 
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
+    if (!saveModal.classList.contains("hidden")) {
+      closeSaveModal();
+      return;
+    }
     if (!modal.classList.contains("hidden")) {
       pendingDelete = null;
       modal.classList.add("hidden");
@@ -746,16 +916,30 @@ window.addEventListener("keydown", (e) => {
     } else if (currentView === "EDITOR") {
       renderMapList();
       show("MAP_LIST");
+    } else if (currentView === "SAVED") {
+      show("MAIN");
     } else if (currentView === "TRAINING") {
       api("/api/train/status").then(async (snap) => {
-        if (!snap.done) await api("/api/train/stop", { method: "POST" });
-        else {
+        if (snap.done && snap.stopped) {
           stopTrainPoll();
+          show("MAIN");
+          return;
+        }
+        if (!snap.done) {
+          trainStopping = true;
+          trainStopBtn.textContent = "Przerywanie…";
+          trainStopBtn.disabled = true;
+          await api("/api/train/stop", { method: "POST" });
+        } else {
+          stopTrainPoll();
+          activeModelId = null;
+          previewOrigin = "train";
+          setPreviewHeading(null);
           await renderPreview();
           show("PREVIEW");
         }
       });
-    } else if (currentView === "PREVIEW") show("MAIN");
+    } else if (currentView === "PREVIEW") leavePreview();
     else if (currentView === "GAME") {
       closeWs();
       renderPreview().then(() => show("PREVIEW"));
